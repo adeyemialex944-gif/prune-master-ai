@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+backend/venv/
+*.env
+*.env.*
+
+# Executables & Binaries
+*.exe
+cloudflared.exe
+ngrok.exe
+
+# Large media files (videos, audio, clips)
+*.mp4
+*.mp3
+*.wav
+*.mov
+*.avi
+*.mkv
+sample_teaching.mp4
+sermon_faith_message.mp4
+
+# SQLite & Databases
+*.sqlite
+*.sqlite3
+*.db
+
+# Faster-Whisper cached weights & models
+backend/data/models/
+**/models--Systran--*
+
+# User data & Transcripts (keep directory structure, ignore content)
+backend/data/uploads/*
+!backend/data/uploads/.gitkeep
+backend/data/clips/*
+!backend/data/clips/.gitkeep
+backend/data/temp/*
+!backend/data/temp/.gitkeep
+backend/data/transcripts/*
+!backend/data/transcripts/.gitkeep
+
+# Node & Frontend Build
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+dist-ssr/
+*.local
+
+# Logs
+*.log
+
+# Editor & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
