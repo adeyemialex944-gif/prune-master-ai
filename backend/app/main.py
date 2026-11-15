@@ -103,3 +103,10 @@ def get_stats(
         "user_videos": user_videos,
         "user_clips": user_clips
     }
+
+# Production: Serve React frontend if built into frontend/dist
+from pathlib import Path
+FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
+
