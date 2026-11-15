@@ -14,18 +14,27 @@ def get_whisper_model(model_size: str = "tiny"):
     from faster_whisper import WhisperModel
     global _LOADED_MODELS
     if model_size not in _LOADED_MODELS:
-        logger.info(f"Loading faster-whisper model '{model_size}' with multithreading...")
+        logger.info(f"Loading faster-whisper model '{model_size}' (optimized for memory)...")
         import os
         cpu_count = os.cpu_count() or 4
+        threads = min(cpu_count, 2)
         _LOADED_MODELS[model_size] = WhisperModel(
             model_size,
             device="cpu",
             compute_type="int8",
             download_root=str(MODELS_DIR),
-            cpu_threads=cpu_count,
-            num_workers=2
+            cpu_threads=threads,
+            num_workers=1
         )
     return _LOADED_MODELS[model_size]
+
+def unload_whisper_models():
+    """Frees all Whisper models from memory and invokes garbage collection to prevent OOM."""
+    global _LOADED_MODELS
+    import gc
+    _LOADED_MODELS.clear()
+    gc.collect()
+    logger.info("Whisper models unloaded from memory.")
 
 def transcribe_audio_file(
     audio_path: Path,
@@ -92,5 +101,12 @@ def transcribe_audio_file(
 
     if progress_callback:
         progress_callback(100, "Transcription completed!")
+
+    # Auto-cleanup memory to avoid 512MB RAM limits on cloud instances
+    import os, gc
+    if os.environ.get("RENDER") or os.environ.get("PORT"):
+        unload_whisper_models()
+    else:
+        gc.collect()
 
     return result

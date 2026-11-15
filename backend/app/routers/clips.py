@@ -762,3 +762,33 @@ def get_clip_metadata(
     metadata["clip_id"] = clip.id
     metadata["video_id"] = video.id
     return metadata
+
+@router.post("/api/storage/prune-cache")
+def prune_server_cache(max_age_hours: float = 2.0):
+    """
+    Auto-prunes temporary audio, thumbnails, and temp files older than max_age_hours
+    so the cloud server maintains zero permanent disk bloat.
+    """
+    import time
+    now = time.time()
+    cutoff = now - (max_age_hours * 3600)
+    freed_bytes = 0
+    deleted_files = 0
+
+    if TEMP_DIR.exists():
+        for item in TEMP_DIR.iterdir():
+            if item.is_file() and not item.name.startswith("."):
+                try:
+                    if item.stat().st_mtime < cutoff:
+                        sz = item.stat().st_size
+                        item.unlink()
+                        freed_bytes += sz
+                        deleted_files += 1
+                except Exception:
+                    pass
+
+    return {
+        "status": "ok",
+        "deleted_files": deleted_files,
+        "freed_mb": round(freed_bytes / (1024 * 1024), 2)
+    }

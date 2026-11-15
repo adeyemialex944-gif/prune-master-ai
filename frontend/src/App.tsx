@@ -73,6 +73,15 @@ import {
   XTwitterIcon,
   PlatformBadge
 } from './components/SocialIcons'
+import {
+  saveClipToDevice,
+  getClipsFromDevice,
+  deleteClipFromDevice,
+  getDeviceStorageEstimate,
+  clearAllDeviceClips,
+  downloadBlobToDisk,
+  type LocalDeviceClip
+} from './services/deviceStorage'
 interface AuthUser {
   id: number
   username: string
@@ -197,6 +206,10 @@ interface ClipItem {
   status: string
   caption_style: string
   created_at: string
+  localBlobUrl?: string
+  isDeviceStored?: boolean
+  deviceStorageSizeMB?: string
+  rawBlob?: Blob
 }
 interface ActiveJobState {
   jobId: string
@@ -526,6 +539,12 @@ export default function App() {
     }
   }>({})
   const [reRenderClipId, setReRenderClipId] = useState<number | null>(null)
+  // Device-Local Storage State (Phone/PC storage)
+  const [deviceStorageMB, setDeviceStorageMB] = useState<string>('0.0')
+  const [deviceStorageQuotaMB, setDeviceStorageQuotaMB] = useState<string>('N/A')
+  const [deviceClipsCount, setDeviceClipsCount] = useState<number>(0)
+  const [isSavingToDevice, setIsSavingToDevice] = useState<boolean>(false)
+  const [deviceStorageNotification, setDeviceStorageNotification] = useState<string | null>(null)
   // Social Media Post Kit State
   const [socialModalClip, setSocialModalClip] = useState<ClipItem | null>(null)
   const [socialMetadata, setSocialMetadata] = useState<SocialMetadata | null>(null)
@@ -693,22 +712,183 @@ export default function App() {
       setIsLoadingVideos(false)
     }
   }
+  const updateDeviceStorageStats = async () => {
+    try {
+      const devClips = await getClipsFromDevice()
+      setDeviceClipsCount(devClips.length)
+      const est = await getDeviceStorageEstimate()
+      setDeviceStorageMB(est.usedMB)
+      setDeviceStorageQuotaMB(est.quotaMB)
+    } catch (e) {
+      console.warn('Error reading device stats:', e)
+    }
+  }
+
   const loadClips = async (scopeAll?: boolean, overrideToken?: string) => {
     setIsLoadingClips(true)
     try {
       const useScope = scopeAll !== undefined ? scopeAll : directorScopeAll
       const scopeParam = useScope ? '?all_users=true' : ''
-      const res = await fetch(`/api/clips${scopeParam}`, {
-        headers: getAuthHeaders(overrideToken)
-      })
-      if (res.ok) {
-        const data: ClipItem[] = await res.json()
-        setClips(data)
+
+      // 1. Read clips from device storage (IndexedDB)
+      let deviceClips: LocalDeviceClip[] = []
+      try {
+        deviceClips = await getClipsFromDevice()
+      } catch (e) {
+        console.warn('Error loading device clips:', e)
       }
+      const deviceMap = new Map(deviceClips.map(dc => [String(dc.id), dc]))
+
+      // 2. Read clips from server
+      let serverClips: ClipItem[] = []
+      try {
+        const res = await fetch(`/api/clips${scopeParam}`, {
+          headers: getAuthHeaders(overrideToken)
+        })
+        if (res.ok) {
+          serverClips = await res.json()
+        }
+      } catch (err) {
+        console.warn('Server unreachable or pruned, using device storage clips:', err)
+      }
+
+      // 3. Merge: server clips get device blobUrl; device clips preserved even if pruned on cloud
+      const mergedMap = new Map<string, ClipItem>()
+
+      // Add device clips
+      deviceClips.forEach(dc => {
+        mergedMap.set(String(dc.id), {
+          id: typeof dc.id === 'number' ? dc.id : Number(dc.id) || 9999,
+          video_id: dc.videoId || 0,
+          title: dc.title,
+          start_time: 0,
+          end_time: dc.duration,
+          aspect_ratio: dc.aspectRatio || '9:16',
+          file_path: dc.blobUrl || '',
+          thumbnail_path: dc.thumbnailUrl || null,
+          status: dc.status || 'completed',
+          caption_style: 'word_red',
+          created_at: dc.createdAt,
+          localBlobUrl: dc.blobUrl,
+          isDeviceStored: !!dc.videoBlob,
+          deviceStorageSizeMB: dc.fileSizeBytes ? (dc.fileSizeBytes / (1024 * 1024)).toFixed(1) : undefined,
+          rawBlob: dc.videoBlob
+        })
+      })
+
+      // Merge server clips
+      serverClips.forEach(sc => {
+        const dev = deviceMap.get(String(sc.id))
+        mergedMap.set(String(sc.id), {
+          ...sc,
+          localBlobUrl: dev?.blobUrl,
+          isDeviceStored: !!dev?.videoBlob,
+          deviceStorageSizeMB: dev?.fileSizeBytes ? (dev.fileSizeBytes / (1024 * 1024)).toFixed(1) : undefined,
+          rawBlob: dev?.videoBlob
+        })
+      })
+
+      const finalClips = Array.from(mergedMap.values()).sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      )
+
+      setClips(finalClips)
+      updateDeviceStorageStats()
     } catch (err) {
       console.error('Failed to load clips:', err)
     } finally {
       setIsLoadingClips(false)
+    }
+  }
+
+  const handleSaveSingleClipToDevice = async (clip: ClipItem) => {
+    try {
+      setDeviceStorageNotification(`Saving "${clip.title}" to device storage...`)
+      const res = await fetch(`/api/clips/${clip.id}/download`)
+      if (!res.ok) throw new Error('Download failed')
+      const blob = await res.blob()
+      await saveClipToDevice({
+        id: clip.id,
+        serverClipId: clip.id,
+        videoId: clip.video_id,
+        title: clip.title,
+        duration: clip.end_time - clip.start_time,
+        aspectRatio: clip.aspect_ratio,
+        createdAt: clip.created_at,
+        status: clip.status,
+        fileSizeBytes: blob.size,
+      }, blob)
+      await loadClips()
+      setDeviceStorageNotification(`✅ "${clip.title}" saved on this device!`)
+      setTimeout(() => setDeviceStorageNotification(null), 4000)
+    } catch (e) {
+      console.error('Failed to save clip to device:', e)
+      setDeviceStorageNotification('❌ Could not save clip to device.')
+      setTimeout(() => setDeviceStorageNotification(null), 4000)
+    }
+  }
+
+  const handleSaveAllToDevice = async () => {
+    setIsSavingToDevice(true)
+    let saved = 0
+    try {
+      for (const clip of clips) {
+        if (!clip.isDeviceStored && clip.status === 'completed') {
+          setDeviceStorageNotification(`Saving ${clip.title} (${saved + 1}/${clips.length})...`)
+          try {
+            const res = await fetch(`/api/clips/${clip.id}/download`)
+            if (res.ok) {
+              const blob = await res.blob()
+              await saveClipToDevice({
+                id: clip.id,
+                serverClipId: clip.id,
+                videoId: clip.video_id,
+                title: clip.title,
+                duration: clip.end_time - clip.start_time,
+                aspectRatio: clip.aspect_ratio,
+                createdAt: clip.created_at,
+                status: clip.status,
+                fileSizeBytes: blob.size,
+              }, blob)
+              saved++
+            }
+          } catch (err) {
+            console.warn('Could not save clip', clip.id, err)
+          }
+        }
+      }
+      await loadClips()
+      setDeviceStorageNotification(`🎉 All clips saved to this device (${saved} new)!`)
+      setTimeout(() => setDeviceStorageNotification(null), 5000)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setIsSavingToDevice(false)
+    }
+  }
+
+  const handleDownloadAllClips = async () => {
+    for (const clip of clips) {
+      if (clip.rawBlob) {
+        downloadBlobToDisk(clip.rawBlob, `${clip.title}.mp4`)
+      } else {
+        const link = document.createElement('a')
+        link.href = clip.localBlobUrl || `/api/clips/${clip.id}/download`
+        link.download = `${clip.title}.mp4`
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+      }
+      await new Promise(r => setTimeout(r, 400))
+    }
+  }
+
+  const handleClearDeviceStorage = async () => {
+    if (window.confirm('Are you sure you want to clear device storage for this browser? This will free up storage space on your device.')) {
+      await clearAllDeviceClips()
+      await loadClips()
+      setDeviceStorageNotification('Device storage cleared.')
+      setTimeout(() => setDeviceStorageNotification(null), 3000)
     }
   }
   const loadDirectorUsers = async (overrideToken?: string) => {
@@ -1458,6 +1638,8 @@ export default function App() {
                 clearInterval(pollInterval)
                 setIsCuttingSelectedMoments(false)
                 loadClips()
+                // Auto-save the freshly cut shorts directly into user's phone/laptop storage!
+                setTimeout(() => handleSaveAllToDevice(), 1200)
                 checkHealth()
                 fetchTrialStatus()
               } else if (jData.status === 'failed') {
@@ -5249,11 +5431,72 @@ export default function App() {
                   <button
                     onClick={() => loadClips()}
                     disabled={isLoadingClips}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300 transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300 transition-colors cursor-pointer"
                   >
                     <RefreshCw className={`h-3 w-3 ${isLoadingClips ? 'animate-spin' : ''}`} />
                     Refresh
                   </button>
+                </div>
+
+                {/* DEVICE-LOCAL STORAGE BAR */}
+                <div className="mb-6 p-4 rounded-xl border border-emerald-500/30 bg-gradient-to-r from-emerald-950/20 via-zinc-900/80 to-purple-950/20 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                      <HardDrive className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-sm font-semibold text-white">📱 Device-Local Storage</h4>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          100% On Your Device
+                        </span>
+                      </div>
+                      <p className="text-xs text-zinc-400 mt-0.5">
+                        {deviceClipsCount} clips saved in this browser ({deviceStorageMB} MB used) • 0 MB cloud space used • Safe from server restarts!
+                      </p>
+                      {deviceStorageNotification && (
+                        <div className="text-xs text-amber-300 mt-1 font-medium animate-pulse">
+                          {deviceStorageNotification}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={handleSaveAllToDevice}
+                      disabled={isSavingToDevice || clips.length === 0}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold shadow transition-all cursor-pointer"
+                      title="Save all clips into phone/laptop memory"
+                    >
+                      {isSavingToDevice ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Smartphone className="w-3.5 h-3.5" />
+                      )}
+                      <span>{isSavingToDevice ? 'Saving...' : 'Save All to Device'}</span>
+                    </button>
+
+                    <button
+                      onClick={handleDownloadAllClips}
+                      disabled={clips.length === 0}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold shadow transition-all cursor-pointer"
+                      title="Download all clips to your PC/phone Downloads folder"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download All (.mp4)</span>
+                    </button>
+
+                    {deviceClipsCount > 0 && (
+                      <button
+                        onClick={handleClearDeviceStorage}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-950/40 hover:bg-red-900/60 text-red-400 border border-red-800/40 text-xs transition-all cursor-pointer"
+                        title="Free up device disk space"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Free Space</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {clips.length === 0 ? (
                   <div className="border border-[#22222a] rounded-lg p-12 text-center bg-[#0d0d11]">
@@ -5346,21 +5589,47 @@ export default function App() {
                             {isReady && !isRendering && (
                               <div className="space-y-2">
                                 <div className="flex items-center justify-between text-xs">
-                                  <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-950/60 text-emerald-400 border border-emerald-800/40 font-medium">
-                                    <CheckCircle2 className="h-3 w-3" /> 9:16 Short Ready
+                                  <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium ${
+                                    clip.isDeviceStored
+                                      ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-600/50'
+                                      : 'bg-zinc-800/80 text-zinc-300 border border-zinc-700/50'
+                                  }`}>
+                                    {clip.isDeviceStored ? (
+                                      <>
+                                        <Smartphone className="h-3 w-3 text-emerald-400" />
+                                        <span>On Device {clip.deviceStorageSizeMB ? `(${clip.deviceStorageSizeMB} MB)` : ''}</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <CheckCircle2 className="h-3 w-3 text-emerald-400" />
+                                        <span>Ready (Cloud)</span>
+                                      </>
+                                    )}
                                   </span>
-                                  <button
-                                    onClick={() => setSelectedPreviewClip(clip)}
-                                    className="text-xs text-purple-400 hover:text-purple-300 font-medium flex items-center gap-1"
-                                  >
-                                    <Play className="h-3 w-3 fill-purple-400" />
-                                    <span>Watch Clip</span>
-                                  </button>
+                                  <div className="flex items-center gap-2">
+                                    {!clip.isDeviceStored && (
+                                      <button
+                                        onClick={() => handleSaveSingleClipToDevice(clip)}
+                                        className="text-[11px] text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 cursor-pointer"
+                                        title="Save to your phone or laptop storage"
+                                      >
+                                        <Smartphone className="h-3 w-3" />
+                                        <span>Save</span>
+                                      </button>
+                                    )}
+                                    <button
+                                      onClick={() => setSelectedPreviewClip(clip)}
+                                      className="text-xs text-purple-400 hover:text-purple-300 font-medium flex items-center gap-1 cursor-pointer"
+                                    >
+                                      <Play className="h-3 w-3 fill-purple-400" />
+                                      <span>Watch</span>
+                                    </button>
+                                  </div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-2">
                                   <a
-                                    href={`/api/clips/${clip.id}/download`}
-                                    download
+                                    href={clip.localBlobUrl || `/api/clips/${clip.id}/download`}
+                                    download={`${clip.title}.mp4`}
                                     className="flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium transition-colors shadow-sm"
                                   >
                                     <Download className="h-3.5 w-3.5 shrink-0" />
@@ -5626,9 +5895,16 @@ export default function App() {
                         </button>
                         <div className="truncate">
                           <h4 className="text-xs font-semibold text-zinc-200 truncate">{selectedPreviewClip.title}</h4>
-                          <span className="text-[10px] text-purple-400 font-mono">
-                            {selectedPreviewClip.aspect_ratio?.includes('16:9') ? '16:9 Widescreen Landscape' : '9:16 Vertical Reel'}
-                          </span>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className="text-[10px] text-purple-400 font-mono">
+                              {selectedPreviewClip.aspect_ratio?.includes('16:9') ? '16:9 Widescreen Landscape' : '9:16 Vertical Reel'}
+                            </span>
+                            {selectedPreviewClip.isDeviceStored && (
+                              <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-700/40 font-medium">
+                                <Smartphone className="h-2.5 w-2.5" /> Playing from Device Storage
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                       <button
@@ -5647,7 +5923,7 @@ export default function App() {
                       <video
                         controls
                         autoPlay
-                        src={selectedPreviewClip.file_path || ''}
+                        src={selectedPreviewClip.localBlobUrl || selectedPreviewClip.file_path || ''}
                         className="w-full h-full object-contain"
                       />
                     </div>
@@ -5671,8 +5947,8 @@ export default function App() {
                           <span>🎬 Edit in Master Editor</span>
                         </button>
                         <a
-                          href={`/api/clips/${selectedPreviewClip.id}/download`}
-                          download
+                          href={selectedPreviewClip.localBlobUrl || `/api/clips/${selectedPreviewClip.id}/download`}
+                          download={`${selectedPreviewClip.title}.mp4`}
                           className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-medium transition-colors shadow"
                         >
                           <Download className="h-3.5 w-3.5" />
