@@ -6,9 +6,17 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Load Haar cascade once
-_cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-_face_cascade = cv2.CascadeClassifier(_cascade_path)
+# Load Haar cascade safely with graceful fallback
+_face_cascade = None
+try:
+    if hasattr(cv2, 'data') and hasattr(cv2.data, 'haarcascades') and hasattr(cv2, 'CascadeClassifier'):
+        _cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        _face_cascade = cv2.CascadeClassifier(_cascade_path)
+    elif hasattr(cv2, 'CascadeClassifier'):
+        _face_cascade = cv2.CascadeClassifier()
+except Exception as e:
+    logger.warning(f"Could not load Haar cascade classifier: {e}")
+    _face_cascade = None
 
 
 def analyze_speaker_face_tracking(

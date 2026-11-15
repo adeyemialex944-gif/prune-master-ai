@@ -30,6 +30,9 @@ sermon_faith_message.mp4
 *.sqlite
 *.sqlite3
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 
 # Faster-Whisper cached weights & models
 backend/data/models/
