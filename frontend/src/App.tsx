@@ -478,6 +478,17 @@ export default function App() {
   }
   const [autoMiningVideo, setAutoMiningVideo] = useState<VideoItem | null>(null)
   const [activeMiningJob, setActiveMiningJob] = useState<ActiveJobState | null>(null)
+  // Review & Cut Studio State
+  const [analyzingVideo, setAnalyzingVideo] = useState<VideoItem | null>(null)
+  const [isAnalyzingVideo, setIsAnalyzingVideo] = useState<boolean>(false)
+  const [analysisProgress, setAnalysisProgress] = useState<number>(0)
+  const [analysisMessage, setAnalysisMessage] = useState<string>('')
+  const [discoveredMoments, setDiscoveredMoments] = useState<HighlightCandidate[]>([])
+  const [selectedMomentIds, setSelectedMomentIds] = useState<{ [candId: string]: boolean }>({})
+  const [isCuttingSelectedMoments, setIsCuttingSelectedMoments] = useState<boolean>(false)
+  const [cutSegmentsJob, setCutSegmentsJob] = useState<ActiveJobState | null>(null)
+  const [activeMomentPreview, setActiveMomentPreview] = useState<HighlightCandidate | null>(null)
+  const studioPreviewVideoRef = useRef<HTMLVideoElement | null>(null)
   const [health, setHealth] = useState<HealthData | null>(null)
   const [stats, setStats] = useState<StatsData | null>(null)
   const [isBackendOnline, setIsBackendOnline] = useState<boolean | null>(null)
@@ -1233,6 +1244,238 @@ export default function App() {
   }
 
   // ViralMinner Pipeline: Multi-Clip Miner
+  // 1. Analyze Video to Discover Important Segments
+  const handleAnalyzeVideo = async (video: VideoItem) => {
+    setAnalyzingVideo(video)
+    setIsAnalyzingVideo(true)
+    setAnalysisProgress(10)
+    setAnalysisMessage('Checking audio & speech transcript with Whisper AI...')
+    setDiscoveredMoments([])
+    setSelectedMomentIds({})
+    setActiveMomentPreview(null)
+
+    try {
+      const res = await fetch(`/api/videos/${video.id}/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({
+          clip_count: clipCount,
+          lab_mode: labMode,
+          min_duration: minDuration,
+          max_duration: maxDuration,
+          timeline_strategy: timelineStrategy
+        })
+      })
+
+      if (!res.ok) {
+        throw new Error(`Analysis request failed with status ${res.status}`)
+      }
+
+      const data = await res.json()
+
+      // Synchronous return (video already transcribed)
+      if (data.status === 'completed' && Array.isArray(data.highlights)) {
+        setDiscoveredMoments(data.highlights)
+        const initialSelected: { [id: string]: boolean } = {}
+        data.highlights.forEach((h: HighlightCandidate) => {
+          initialSelected[h.id] = true
+        })
+        setSelectedMomentIds(initialSelected)
+        if (data.highlights.length > 0) {
+          setActiveMomentPreview(data.highlights[0])
+        }
+        setIsAnalyzingVideo(false)
+        setAnalysisProgress(100)
+        setAnalysisMessage(`Done! Discovered ${data.highlights.length} important moments.`)
+        return
+      }
+
+      // Background job polling
+      if (data.job_id) {
+        const jobId = data.job_id
+        const pollInterval = setInterval(async () => {
+          try {
+            const jRes = await fetch(`/api/jobs/${jobId}`)
+            if (jRes.ok) {
+              const jData = await jRes.json()
+              setAnalysisProgress(jData.progress || 15)
+              setAnalysisMessage(jData.message || 'AI analyzing video moments...')
+
+              if (jData.status === 'completed') {
+                clearInterval(pollInterval)
+                setIsAnalyzingVideo(false)
+                setAnalysisProgress(100)
+                let hlList: HighlightCandidate[] = []
+                if (jData.details) {
+                  try {
+                    hlList = JSON.parse(jData.details)
+                  } catch (e) {
+                    console.error('Failed to parse highlights from job details:', e)
+                  }
+                }
+                if (hlList.length === 0) {
+                  const hlRes = await fetch(`/api/videos/${video.id}/highlights?clip_count=${clipCount}&lab_mode=${labMode}&min_duration=${minDuration}&max_duration=${maxDuration}&timeline_strategy=${timelineStrategy}`)
+                  if (hlRes.ok) {
+                    const hlData = await hlRes.json()
+                    hlList = hlData.highlights || []
+                  }
+                }
+                setDiscoveredMoments(hlList)
+                const initialSelected: { [id: string]: boolean } = {}
+                hlList.forEach((h: HighlightCandidate) => {
+                  initialSelected[h.id] = true
+                })
+                setSelectedMomentIds(initialSelected)
+                if (hlList.length > 0) {
+                  setActiveMomentPreview(hlList[0])
+                }
+                loadVideos()
+              } else if (jData.status === 'failed') {
+                clearInterval(pollInterval)
+                setIsAnalyzingVideo(false)
+                setAnalysisMessage(`Analysis failed: ${jData.message}`)
+              }
+            }
+          } catch (err) {
+            console.error('Job polling error:', err)
+          }
+        }, 1200)
+      }
+    } catch (err: any) {
+      setIsAnalyzingVideo(false)
+      setAnalysisMessage(`Error: ${err.message || 'Failed to start video analysis'}`)
+    }
+  }
+
+  // 2. Toggle Selection of a Segment
+  const toggleSelectMoment = (candId: string) => {
+    setSelectedMomentIds(prev => ({
+      ...prev,
+      [candId]: !prev[candId]
+    }))
+  }
+
+  // 3. Select / Deselect All Segments
+  const selectAllMoments = (select: boolean) => {
+    const updated: { [id: string]: boolean } = {}
+    discoveredMoments.forEach(m => {
+      updated[m.id] = select
+    })
+    setSelectedMomentIds(updated)
+  }
+
+  // 4. Fine-tune Segment Start / End Times
+  const updateMomentTime = (candId: string, field: 'start_time' | 'end_time', delta: number) => {
+    setDiscoveredMoments(prev =>
+      prev.map(c => {
+        if (c.id !== candId) return c
+        let newVal = Math.max(0, c[field] + delta)
+        newVal = Math.round(newVal * 10) / 10
+        if (field === 'start_time' && newVal >= c.end_time) return c
+        if (field === 'end_time' && newVal <= c.start_time) return c
+        const updated = {
+          ...c,
+          [field]: newVal,
+          duration: field === 'start_time' ? Math.round((c.end_time - newVal) * 10) / 10 : Math.round((newVal - c.start_time) * 10) / 10
+        }
+        if (activeMomentPreview?.id === candId) {
+          setActiveMomentPreview(updated)
+        }
+        return updated
+      })
+    )
+  }
+
+  // 5. Play Snippet in Studio Preview
+  const playStudioMomentSnippet = (cand: HighlightCandidate) => {
+    setActiveMomentPreview(cand)
+    if (studioPreviewVideoRef.current) {
+      studioPreviewVideoRef.current.currentTime = cand.start_time
+      studioPreviewVideoRef.current.play()
+    }
+  }
+
+  // 6. Cut & Export Selected Segments
+  const handleCutSelectedMoments = async () => {
+    if (!analyzingVideo) return
+    const chosen = discoveredMoments.filter(m => selectedMomentIds[m.id])
+    if (chosen.length === 0) {
+      alert('Please select at least 1 important segment to cut!')
+      return
+    }
+
+    setIsCuttingSelectedMoments(true)
+    try {
+      const res = await fetch(`/api/videos/${analyzingVideo.id}/cut-segments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({
+          segments: chosen.map(m => ({
+            title: m.title,
+            start_time: m.start_time,
+            end_time: m.end_time,
+            score: m.score,
+            reason: m.reason,
+            text: m.text
+          })),
+          framing_mode: framingMode,
+          burn_captions: burnCaptions,
+          caption_style: captionStyle,
+          resolution: resolution,
+          aspect_ratio: aspectRatio
+        })
+      })
+
+      if (!res.ok) {
+        throw new Error(`Cut request failed with status ${res.status}`)
+      }
+
+      const data = await res.json()
+      if (data.job_id) {
+        const jobId = data.job_id
+        setCutSegmentsJob({
+          jobId,
+          
+          status: 'running',
+          progress: 5,
+          message: `Cutting ${chosen.length} selected shorts...`
+        })
+
+        const pollInterval = setInterval(async () => {
+          try {
+            const jRes = await fetch(`/api/jobs/${jobId}`)
+            if (jRes.ok) {
+              const jData = await jRes.json()
+              setCutSegmentsJob({
+                jobId,
+                
+                status: jData.status,
+                progress: jData.progress || 5,
+                message: jData.message || 'Cutting clips...'
+              })
+
+              if (jData.status === 'completed') {
+                clearInterval(pollInterval)
+                setIsCuttingSelectedMoments(false)
+                loadClips()
+                checkHealth()
+                fetchTrialStatus()
+              } else if (jData.status === 'failed') {
+                clearInterval(pollInterval)
+                setIsCuttingSelectedMoments(false)
+              }
+            }
+          } catch (err) {
+            console.error('Job polling error:', err)
+          }
+        }, 1200)
+      }
+    } catch (err: any) {
+      setIsCuttingSelectedMoments(false)
+      alert(`Error starting cut: ${err.message}`)
+    }
+  }
+
   const startMiningPipeline = async (videoId: number) => {
     try {
       const vid = videos.find(v => v.id === videoId) || uploadedVideoResult
@@ -1690,7 +1933,8 @@ export default function App() {
             setSelectedFile(null)
             loadVideos()
             checkHealth()
-            startMiningPipeline(data.id)
+            // Automatically analyze the uploaded video and discover its important segments
+            handleAnalyzeVideo(data)
           } catch {
             setUploadError('Failed to parse upload server response.')
           }
@@ -3230,6 +3474,50 @@ export default function App() {
                         </div>
                       )}
                     </div>
+
+                    {/* Quick Pick Existing Video from Library to Analyze */}
+                    {videos.length > 0 && !selectedFile && (
+                      <div className="mt-4 p-3.5 rounded-xl bg-[#09090e] border border-zinc-800/80 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+                            <Film className="h-3.5 w-3.5 text-purple-400" />
+                            <span>Or select a previously uploaded video to analyze:</span>
+                          </span>
+                          <span className="text-[10px] text-zinc-500 font-mono">{videos.length} videos available</span>
+                        </div>
+                        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                          {videos.map(v => {
+                            const isChosen = analyzingVideo?.id === v.id
+                            return (
+                              <button
+                                key={v.id}
+                                type="button"
+                                onClick={() => {
+                                  setAnalyzingVideo(v)
+                                  handleAnalyzeVideo(v)
+                                }}
+                                className={`px-3 py-2 rounded-lg border text-left shrink-0 transition-all flex items-center gap-2 cursor-pointer ${
+                                  isChosen
+                                    ? 'bg-purple-950/60 border-purple-500 text-white shadow ring-1 ring-purple-500/40'
+                                    : 'bg-[#12121a] border-zinc-800 text-zinc-300 hover:border-purple-600/60 hover:text-white'
+                                }`}
+                              >
+                                <Play className="h-3 w-3 text-purple-400 shrink-0" />
+                                <div className="max-w-[140px] truncate">
+                                  <span className="text-xs font-medium block truncate">{v.original_name}</span>
+                                  <span className="text-[10px] text-zinc-500 font-mono block">
+                                    {v.duration_seconds > 0 ? formatSecsAndMins(Math.round(v.duration_seconds)) : 'Video'}
+                                  </span>
+                                </div>
+                                <span className="text-[10px] px-2 py-0.5 rounded bg-purple-900/60 text-purple-200 border border-purple-700/60 font-semibold shrink-0">
+                                  🔍 Analyze
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
                 {/* Input Mode 2: YouTube URL Input */}
@@ -3765,16 +4053,30 @@ export default function App() {
                 {selectedFile && !isUploading && (
                   <div className="mt-6 pt-4 border-t border-[#22222e] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div className="text-xs text-zinc-400">
-                      Ready to mine <strong className="text-purple-300">{clipCount} {aspectRatio === '16:9' ? '16:9 Widescreen' : '9:16 Vertical'} clips</strong> ({formatSecsAndMins(minDuration)} - {formatSecsAndMins(maxDuration)}, {resolution}, {burnCaptions ? `1 word at a time [${captionStyle.replace('_', ' ')}]` : 'clean/no captions'}, <span className="text-purple-300 font-medium">{timelineStrategy === 'timeline_balanced' ? 'Full Video Timeline Balanced' : 'Top Peaks'}</span>) from <span className="text-zinc-200">{selectedFile.name}</span>
+                      Ready to process <strong className="text-white">{selectedFile.name}</strong> ({formatBytes(selectedFile.size)}) &rarr; <span className="text-purple-300 font-semibold">{clipCount} {aspectRatio === '16:9' ? '16:9 Widescreen' : '9:16 Vertical'} clips</span> ({formatSecsAndMins(minDuration)} - {formatSecsAndMins(maxDuration)}, {resolution}, {burnCaptions ? `auto-captions [${captionStyle.replace('_', ' ')}]` : 'clean'})
                     </div>
-                    <button
-                      type="button"
-                      onClick={startUpload}
-                      className="px-8 py-3 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-sm font-bold transition-all shadow-xl flex items-center justify-center gap-2 transform hover:scale-[1.02]"
-                    >
-                      <Zap className="h-4 w-4" />
-                      <span>🚀 MINE VIRAL CLIPS NOW</span>
-                    </button>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={startUpload}
+                        className="px-6 py-3 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-500 hover:to-indigo-500 text-white text-xs sm:text-sm font-bold transition-all shadow-xl flex items-center justify-center gap-2 transform hover:scale-[1.02] cursor-pointer"
+                        title="Uploads video, extracts speech, discovers key segments, and lets you review & select which ones to cut!"
+                      >
+                        <Search className="h-4 w-4 text-purple-200" />
+                        <span>🔍 ANALYZE VIDEO & PICK IMPORTANT SEGMENTS</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          startUpload()
+                        }}
+                        className="px-4 py-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold transition-all border border-zinc-700/60 flex items-center gap-1.5 cursor-pointer"
+                        title="Fast 1-click auto-mine without previewing segments"
+                      >
+                        <Zap className="h-3.5 w-3.5 text-amber-400" />
+                        <span>⚡ 1-Click Auto-Cut</span>
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -3804,6 +4106,338 @@ export default function App() {
                   </div>
                 )}
               </div>
+              
+              {/* STAGE 2A: ACTIVE VIDEO ANALYSIS LIVE SCANNER */}
+              {isAnalyzingVideo && (
+                <div className="p-6 rounded-2xl border-2 border-purple-500/60 bg-gradient-to-b from-[#151522] to-[#0d0d14] shadow-2xl space-y-4 animate-pulse-slow">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-xl bg-purple-600/20 border border-purple-500/50 flex items-center justify-center text-purple-400">
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                          <span>AI Running Through Video & Discovering Important Segments...</span>
+                          <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-purple-950 text-purple-300 border border-purple-800">
+                            {analysisProgress}% Complete
+                          </span>
+                        </h4>
+                        <p className="text-xs text-purple-300">{analysisMessage}</p>
+                      </div>
+                    </div>
+                    <span className="font-mono text-2xl font-black text-purple-400">{analysisProgress}%</span>
+                  </div>
+                  {/* Progress Bar */}
+                  <div className="h-2.5 w-full bg-zinc-900 rounded-full overflow-hidden border border-zinc-800">
+                    <div
+                      className="h-full bg-gradient-to-r from-purple-500 via-indigo-500 to-purple-400 transition-all duration-300"
+                      style={{ width: `${Math.max(5, analysisProgress)}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-1">
+                    <span>1. Speech Transcription & Cadence Analysis (Whisper AI)</span>
+                    <span>2. Climax & Viral Hook Discovery (Gemini AI)</span>
+                    <span>3. Zero Scene Repetition Guarantee</span>
+                  </div>
+                </div>
+              )}
+
+              {/* STAGE 2B: DISCOVERED IMPORTANT SEGMENTS REVIEW & CUT TRAY */}
+              {discoveredMoments.length > 0 && (
+                <div className="p-6 rounded-2xl border-2 border-purple-500/50 bg-[#101018] shadow-2xl space-y-5">
+                  {/* Tray Header */}
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-zinc-800/80 pb-4">
+                    <div>
+                      <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-950/80 border border-purple-500/40 text-purple-300 text-xs font-semibold mb-1.5">
+                        <Sparkles className="h-3.5 w-3.5 text-amber-300" />
+                        <span>IMPORTANT SEGMENTS DISCOVERED</span>
+                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-purple-800 text-white font-mono font-bold ml-1">
+                          {discoveredMoments.length} Moments
+                        </span>
+                      </div>
+                      <h4 className="text-lg font-black text-white flex items-center gap-2">
+                        <span>Review & Select Moments to Cut</span>
+                      </h4>
+                      <p className="text-xs text-zinc-400">
+                        The AI analyzed <strong className="text-zinc-200">{analyzingVideo?.original_name || 'your video'}</strong>. Preview each snippet below, adjust timestamps if you like, and check the ones you want to cut into viral shorts.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => selectAllMoments(true)}
+                        className="px-3 py-1.5 rounded-lg bg-purple-950/70 hover:bg-purple-900 border border-purple-700/60 text-purple-200 text-xs font-semibold transition-all cursor-pointer"
+                      >
+                        Select All ({discoveredMoments.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => selectAllMoments(false)}
+                        className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 text-xs font-medium transition-all cursor-pointer"
+                      >
+                        Deselect All
+                      </button>
+                      <span className="text-xs font-mono font-bold px-3 py-1.5 rounded-lg bg-purple-600/30 text-purple-300 border border-purple-500/40">
+                        {discoveredMoments.filter(m => selectedMomentIds[m.id]).length} of {discoveredMoments.length} Selected
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Main Review Section: Video Preview + Segments Grid */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                    {/* Left: Video Snippet Preview Player (5 Cols) */}
+                    <div className="lg:col-span-5 bg-black rounded-xl p-3 border border-zinc-800 flex flex-col justify-between">
+                      <div>
+                        <div className="aspect-[9/16] max-h-[440px] mx-auto rounded-lg overflow-hidden bg-zinc-950 border-2 border-purple-500/40 shadow-xl flex items-center justify-center relative">
+                          {analyzingVideo ? (
+                            <video
+                              ref={studioPreviewVideoRef}
+                              controls
+                              src={`/media/uploads/${analyzingVideo.filename}`}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="text-zinc-600 text-xs">No video loaded</div>
+                          )}
+                          <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-black/75 text-[10px] font-mono text-purple-300 border border-purple-500/40">
+                            9:16 Mobile Crop Preview
+                          </div>
+                        </div>
+                        {activeMomentPreview && (
+                          <div className="mt-3 text-center px-2">
+                            <h5 className="text-xs font-bold text-white truncate">{activeMomentPreview.title}</h5>
+                            <p className="text-[11px] text-purple-300 font-mono mt-0.5">
+                              {formatSecsAndMins(Math.round(activeMomentPreview.start_time))} &rarr; {formatSecsAndMins(Math.round(activeMomentPreview.end_time))} ({activeMomentPreview.duration}s duration)
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                      <div className="mt-3 p-2.5 rounded-lg bg-[#14141e] border border-[#272738] text-center">
+                        <span className="text-[11px] text-zinc-400 block">
+                          Click <strong>"▶️ Play Snippet"</strong> on any moment to preview it here before cutting!
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Right: Interactive Moment Cards (7 Cols) */}
+                    <div className="lg:col-span-7 space-y-3 max-h-[540px] overflow-y-auto pr-1">
+                      {discoveredMoments.map((cand, idx) => {
+                        const isSelected = !!selectedMomentIds[cand.id]
+                        const isPlaying = activeMomentPreview?.id === cand.id
+                        return (
+                          <div
+                            key={cand.id || idx}
+                            className={`p-4 rounded-xl border transition-all ${
+                              isSelected
+                                ? 'bg-gradient-to-r from-purple-950/40 via-[#13131e] to-indigo-950/30 border-purple-500/80 shadow-md ring-1 ring-purple-500/40'
+                                : 'bg-[#0d0d13] border-zinc-800/80 hover:border-zinc-700 opacity-70'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3 mb-2">
+                              <div className="flex items-start gap-3 flex-1 min-w-0">
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => toggleSelectMoment(cand.id)}
+                                  className="h-5 w-5 accent-purple-600 rounded cursor-pointer mt-0.5 shrink-0"
+                                  title="Check to include in cut batch"
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <input
+                                    type="text"
+                                    value={cand.title}
+                                    onChange={(e) => {
+                                      const newT = e.target.value
+                                      setDiscoveredMoments(prev =>
+                                        prev.map(c => c.id === cand.id ? { ...c, title: newT } : c)
+                                      )
+                                    }}
+                                    className="w-full bg-transparent font-bold text-xs sm:text-sm text-white border-b border-transparent hover:border-zinc-700 focus:border-purple-500 focus:outline-none transition-colors truncate"
+                                    title="Click to edit title"
+                                  />
+                                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-950/70 text-amber-300 border border-amber-500/50 font-mono font-bold flex items-center gap-1">
+                                      <Flame className="h-3 w-3 text-amber-400" /> {cand.score || 95}% Virality Score
+                                    </span>
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-950 text-purple-300 border border-purple-800 font-mono font-medium">
+                                      {formatSecsAndMins(Math.round(cand.start_time))} &rarr; {formatSecsAndMins(Math.round(cand.end_time))} ({cand.duration}s)
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => playStudioMomentSnippet(cand)}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer shrink-0 ${
+                                  isPlaying
+                                    ? 'bg-purple-600 text-white shadow-md'
+                                    : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200'
+                                }`}
+                              >
+                                <Play className="h-3.5 w-3.5 fill-current" />
+                                <span>{isPlaying ? 'Playing' : 'Preview'}</span>
+                              </button>
+                            </div>
+
+                            {/* Spoken Quote */}
+                            {cand.text && (
+                              <p className="text-xs text-zinc-300 leading-relaxed bg-[#07070b] p-2.5 rounded-lg border border-zinc-800/80 mb-2 select-text font-sans italic">
+                                "{cand.text}"
+                              </p>
+                            )}
+
+                            {/* Why it was chosen */}
+                            {cand.reason && (
+                              <div className="text-[11px] text-zinc-400 mb-2.5 flex items-center gap-1.5">
+                                <Sparkles className="h-3 w-3 text-purple-400 shrink-0" />
+                                <span>{cand.reason}</span>
+                              </div>
+                            )}
+
+                            {/* Timestamp Fine-Tuning Controls */}
+                            <div className="pt-2 border-t border-zinc-800/80 flex items-center justify-between text-xs flex-wrap gap-2">
+                              <span className="text-zinc-500 text-[11px] font-medium">Fine-Tune Cut Range:</span>
+                              <div className="flex items-center gap-3 font-mono text-[11px]">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-zinc-400">Start:</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateMomentTime(cand.id, 'start_time', -1.0)}
+                                    className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold"
+                                    title="Nudge back 1s"
+                                  >
+                                    -1s
+                                  </button>
+                                  <span className="text-purple-300 font-bold px-1">{cand.start_time}s</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateMomentTime(cand.id, 'start_time', 1.0)}
+                                    className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold"
+                                    title="Nudge forward 1s"
+                                  >
+                                    +1s
+                                  </button>
+                                </div>
+
+                                <div className="flex items-center gap-1">
+                                  <span className="text-zinc-400">End:</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateMomentTime(cand.id, 'end_time', -1.0)}
+                                    className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold"
+                                    title="Trim back 1s"
+                                  >
+                                    -1s
+                                  </button>
+                                  <span className="text-purple-300 font-bold px-1">{cand.end_time}s</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateMomentTime(cand.id, 'end_time', 1.0)}
+                                    className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold"
+                                    title="Extend forward 1s"
+                                  >
+                                    +1s
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* STAGE 3: CUT IT - Master Action Bar */}
+                  <div className="pt-4 border-t border-purple-500/40 flex flex-col sm:flex-row items-center justify-between gap-4 bg-gradient-to-r from-purple-950/60 via-[#151522] to-indigo-950/60 p-4 rounded-xl border">
+                    <div className="text-xs text-zinc-300">
+                      <div>
+                        Selected <strong className="text-white text-sm">{discoveredMoments.filter(m => selectedMomentIds[m.id]).length} Important Moments</strong> to cut into viral shorts.
+                      </div>
+                      <span className="text-[11px] text-purple-300">
+                        Format: {aspectRatio} • {resolution} • {framingMode === 'smart_face' ? '🎯 Auto Face-Track' : framingMode} • {burnCaptions ? `Auto-Captions [${captionStyle.replace('_', ' ')}]` : 'Clean Video'}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isCuttingSelectedMoments || discoveredMoments.filter(m => selectedMomentIds[m.id]).length === 0}
+                      onClick={handleCutSelectedMoments}
+                      className="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 text-white text-sm font-bold transition-all shadow-2xl flex items-center justify-center gap-2.5 transform hover:scale-[1.02] cursor-pointer"
+                    >
+                      {isCuttingSelectedMoments ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin text-white" />
+                          <span>Cutting Selected Shorts...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Scissors className="h-4 w-4 text-amber-300" />
+                          <span>✂️ CUT & EXPORT {discoveredMoments.filter(m => selectedMomentIds[m.id]).length} SELECTED SHORTS</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* CUTTING JOB PROGRESS TRAY */}
+              {cutSegmentsJob && (
+                <div className="p-6 rounded-2xl border-2 border-emerald-500/60 bg-gradient-to-b from-[#121815] to-[#0c100e] shadow-2xl space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-xl bg-emerald-600/20 border border-emerald-500/50 flex items-center justify-center text-emerald-400">
+                        {cutSegmentsJob.status === 'completed' ? (
+                          <CheckCircle2 className="h-6 w-6 text-emerald-400" />
+                        ) : (
+                          <Loader2 className="h-5 w-5 animate-spin" />
+                        )}
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                          <span>
+                            {cutSegmentsJob.status === 'completed'
+                              ? '🎉 All Selected Shorts Cut & Ready!'
+                              : 'Cutting Selected Shorts in Background...'}
+                          </span>
+                          <span className={`text-[10px] uppercase font-mono px-2 py-0.5 rounded-full ${
+                            cutSegmentsJob.status === 'completed'
+                              ? 'bg-emerald-950 text-emerald-300 border border-emerald-700'
+                              : 'bg-purple-950 text-purple-300 border border-purple-800'
+                          }`}>
+                            {cutSegmentsJob.progress}%
+                          </span>
+                        </h4>
+                        <p className="text-xs text-zinc-300">{cutSegmentsJob.message}</p>
+                      </div>
+                    </div>
+
+                    {cutSegmentsJob.status === 'completed' && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('clips')}
+                        className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <span>View in Shorts Gallery</span>
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="h-2.5 w-full bg-zinc-900 rounded-full overflow-hidden border border-zinc-800">
+                    <div
+                      className={`h-full transition-all duration-300 ${
+                        cutSegmentsJob.status === 'completed'
+                          ? 'bg-emerald-500'
+                          : 'bg-gradient-to-r from-emerald-500 to-teal-400'
+                      }`}
+                      style={{ width: `${Math.max(5, cutSegmentsJob.progress)}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
               {/* ACTIVE MULTI-VIDEO BATCH CUTTING QUEUE */}
               {Object.keys(batchMiningJobs).length > 0 && (
                 <div className="p-6 rounded-2xl border-2 border-purple-500/50 bg-[#12121c] shadow-2xl space-y-4">

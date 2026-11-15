@@ -81,6 +81,7 @@ class JobResponse(BaseModel):
     status: str
     progress: int
     message: str
+    details: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
