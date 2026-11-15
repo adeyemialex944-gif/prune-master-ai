@@ -123,12 +123,21 @@ def download_youtube_video(url: str, output_dir: Path) -> Dict[str, Any]:
     out_template = str(output_dir / f"{prefix}_%(title).50s.%(ext)s")
 
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[ext=mp4]/best',
         'outtmpl': out_template,
         'merge_output_format': 'mp4',
         'noplaylist': True,
         'quiet': True,
         'no_warnings': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios', 'android', 'web'],
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:

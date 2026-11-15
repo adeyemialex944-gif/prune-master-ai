@@ -1145,10 +1145,11 @@ def import_youtube(
         return video
 
     except Exception as e:
-
         logger.error(f"YouTube download failed: {e}", exc_info=True)
-
-        raise HTTPException(status_code=500, detail=f"YouTube import failed: {str(e)}")
+        err_msg = str(e)
+        if "player response" in err_msg.lower() or "bot" in err_msg.lower():
+            err_msg = "YouTube blocked automated cloud scraping for this link. Please download the video file (e.g. via cobalt.tools or browser) and upload the .mp4 directly into Prune Master AI."
+        raise HTTPException(status_code=500, detail=f"YouTube import failed: {err_msg}")
 
 
 

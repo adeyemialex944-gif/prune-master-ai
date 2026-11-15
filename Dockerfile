@@ -10,9 +10,10 @@ RUN npm run build
 FROM python:3.11-slim
 WORKDIR /app
 
-# Install FFmpeg and system dependencies
+# Install FFmpeg, Node.js (for yt-dlp JS runtime), and system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    nodejs \
     libsm6 \
     libxext6 \
     libglib2.0-0 \
