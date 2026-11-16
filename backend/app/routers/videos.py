@@ -148,16 +148,13 @@ def run_transcription_worker(video_id: int, job_id: str, model_size: str):
 
 
 
-        # Run transcription with word timestamps
-
+        # Run transcription with word timestamps (Fast Gemini Flash when key available, Whisper fallback)
+        gemini_key = (video.user.gemini_api_key if video.user and video.user.gemini_api_key else None) or os.environ.get("GEMINI_API_KEY")
         transcript_data = transcribe_audio_file(
-
             audio_path=audio_path,
-
             model_size=model_size,
-
-            progress_callback=progress_callback
-
+            progress_callback=progress_callback,
+            api_key=gemini_key
         )
 
 
@@ -328,7 +325,8 @@ def run_mine_clips_worker(
 
 
 
-            tdata = transcribe_audio_file(audio_path, model_size="tiny", progress_callback=progress_cb)
+            user_key = (video.user.gemini_api_key if video.user and video.user.gemini_api_key else None) or os.environ.get("GEMINI_API_KEY")
+            tdata = transcribe_audio_file(audio_path, model_size="tiny", progress_callback=progress_cb, api_key=user_key)
 
             with open(t_file, "w", encoding="utf-8") as f:
 
@@ -1544,7 +1542,8 @@ def run_analyze_video_worker(
                 job.message = f"Whisper transcribing speech: {msg}"
                 db.commit()
 
-            tdata = transcribe_audio_file(audio_path, model_size="tiny", progress_callback=progress_cb)
+            user_key = (video.user.gemini_api_key if video.user and video.user.gemini_api_key else None) or os.environ.get("GEMINI_API_KEY")
+            tdata = transcribe_audio_file(audio_path, model_size="tiny", progress_callback=progress_cb, api_key=user_key)
             with open(t_file, "w", encoding="utf-8") as f:
                 json.dump(tdata, f, indent=2, ensure_ascii=False)
             video.transcript_path = str(t_file)
