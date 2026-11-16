@@ -4,7 +4,7 @@ import {
   Scissors, Sparkles, Type, Video, Download, Check, Copy,
   Clock, ArrowLeft, RefreshCw, Eye, EyeOff, CheckCircle2, AlertCircle,
   Sliders, Share2, Layers, Flame, Trash2, Plus, Minus, Move, ZoomIn, ZoomOut,
-  AlignLeft, AlignCenter, AlignRight, Edit2, Undo, Palette, Music, Mic,
+  Crosshair, AlignLeft, AlignCenter, AlignRight, Edit2, Undo, Palette, Music, Mic,
   MicOff, ShieldCheck, Crown, Zap, Radio, Smile, Info, ChevronRight,
   Smartphone, Volume1, Keyboard, X, Upload, FileVideo, Bell
 } from 'lucide-react'
@@ -158,10 +158,13 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
 
   // Text position & scale state
   const [textPositionY, setTextPositionY] = useState<number>(42) // 42% from top (center-chest for vertical reels)
+  const [textPositionX, setTextPositionX] = useState<number>(50) // 50% from left (center)
   const [fontSizeScale, setFontSizeScale] = useState<number>(1.0)
   const [showOverlayPreview, setShowOverlayPreview] = useState<boolean>(true)
   const [isEditingActiveCaptionOnVideo, setIsEditingActiveCaptionOnVideo] = useState<boolean>(false)
   const [captionHovered, setCaptionHovered] = useState<boolean>(false)
+  const [isDraggingCaption, setIsDraggingCaption] = useState<boolean>(false)
+  const videoContainerRef = useRef<HTMLDivElement | null>(null)
 
   // Transcript & Segment Editing state
   const [transcriptData, setTranscriptData] = useState<ClipTranscriptData | null>(null)
@@ -366,6 +369,49 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
     window.addEventListener('mousemove', handleMove)
     window.addEventListener('mouseup', handleUp)
     window.addEventListener('touchmove', handleMove)
+    window.addEventListener('touchend', handleUp)
+  }
+
+  // Interactive Direct Dragging of Captions on Video
+  const handleStartCaptionDrag = (e: React.MouseEvent | React.TouchEvent) => {
+    e.stopPropagation()
+    if (isEditingActiveCaptionOnVideo) return
+
+    setIsDraggingCaption(true)
+    const container = videoContainerRef.current
+    if (!container) return
+
+    const handleMove = (moveEvt: MouseEvent | TouchEvent) => {
+      moveEvt.preventDefault()
+      const rect = container.getBoundingClientRect()
+      const clientX = 'touches' in moveEvt ? moveEvt.touches[0].clientX : (moveEvt as MouseEvent).clientX
+      const clientY = 'touches' in moveEvt ? moveEvt.touches[0].clientY : (moveEvt as MouseEvent).clientY
+
+      const rawPctX = Math.round(((clientX - rect.left) / rect.width) * 100)
+      const rawPctY = Math.round(((clientY - rect.top) / rect.height) * 100)
+
+      // Clamped within video boundaries (12% to 88% horizontally, 10% to 90% vertically)
+      const clampedX = Math.max(12, Math.min(88, rawPctX))
+      const clampedY = Math.max(10, Math.min(90, rawPctY))
+      // Magnetic snapping to center (50%) when within ±3%
+      const snappedX = Math.abs(clampedX - 50) <= 3 ? 50 : clampedX
+      const snappedY = Math.abs(clampedY - 50) <= 3 ? 50 : clampedY
+
+      setTextPositionX(snappedX)
+      setTextPositionY(snappedY)
+    }
+
+    const handleUp = () => {
+      setIsDraggingCaption(false)
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+      window.removeEventListener('touchmove', handleMove)
+      window.removeEventListener('touchend', handleUp)
+    }
+
+    window.addEventListener('mousemove', handleMove, { passive: false })
+    window.addEventListener('mouseup', handleUp)
+    window.addEventListener('touchmove', handleMove, { passive: false })
     window.addEventListener('touchend', handleUp)
   }
 
@@ -842,6 +888,7 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
             const activeSeg = segments.find(s => currentT >= s.start && currentT <= s.end)
             if (activeSeg) {
               ctx.save()
+              const capX = (textPositionX / 100) * outWidth
               const capY = (textPositionY / 100) * outHeight
               const capFontSize = Math.round(28 * fontSizeScale * (outHeight / 1280) * 1.4)
               ctx.textAlign = 'center'
@@ -853,20 +900,22 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
               const textMetrics = ctx.measureText(activeSeg.text)
               const boxW = Math.min(outWidth * 0.9, textMetrics.width + 36)
               const boxH = capFontSize * 1.6
+              const boxX = capX - boxW / 2
+              const boxY = capY - boxH / 2
               ctx.fillStyle = 'rgba(0, 0, 0, 0.65)'
               ctx.beginPath()
               if (ctx.roundRect) {
-                ctx.roundRect((outWidth - boxW) / 2, capY - boxH / 2, boxW, boxH, 12)
+                ctx.roundRect(boxX, boxY, boxW, boxH, 12)
               } else {
-                ctx.fillRect((outWidth - boxW) / 2, capY - boxH / 2, boxW, boxH)
+                ctx.fillRect(boxX, boxY, boxW, boxH)
               }
               ctx.fill()
 
               ctx.strokeStyle = '#000000'
               ctx.lineWidth = Math.max(3, Math.round(capFontSize * 0.16))
-              ctx.strokeText(activeSeg.text, outWidth / 2, capY)
+              ctx.strokeText(activeSeg.text, capX, capY)
               ctx.fillStyle = '#facc15'
-              ctx.fillText(activeSeg.text, outWidth / 2, capY)
+              ctx.fillText(activeSeg.text, capX, capY)
               ctx.restore()
             }
           }
@@ -1029,7 +1078,7 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
         start_time: Math.max(0, trimStart).toFixed(2),
         end_time: Math.max(0.1, trimEnd).toFixed(2),
         title: clipTitle.trim(),
-        text_position: `${textPositionY}%`,
+        text_position: `${textPositionX}%,${textPositionY}%`,
         font_size_scale: fontSizeScale.toString(),
         volume_level: (volumeLevel / 100).toString(),
         vocal_boost: vocalBoost.toString(),
@@ -1050,7 +1099,7 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
         start_time: Math.max(0, trimStart),
         end_time: Math.max(0.1, trimEnd),
         title: clipTitle.trim(),
-        text_position: `${textPositionY}%`,
+        text_position: `${textPositionX}%,${textPositionY}%`,
         font_size_scale: fontSizeScale,
         volume_level: volumeLevel / 100,
         vocal_boost: vocalBoost,
@@ -1608,6 +1657,7 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
           <div className="flex-1 relative flex items-center justify-center p-3 sm:p-4 bg-radial from-[#12131f] to-[#07080d] overflow-hidden">
             {/* Aspect Ratio Container */}
             <div
+              ref={videoContainerRef}
               className={`relative overflow-hidden rounded-2xl bg-black border-2 border-purple-500/30 shadow-2xl transition-all duration-300 flex items-center justify-center ${
                 aspectRatio === '9:16'
                   ? 'h-full max-h-[520px] aspect-[9/16]'
@@ -1690,11 +1740,23 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                     className="absolute text-center px-4 z-30 flex items-center justify-center min-h-[64px] pointer-events-none"
                     style={{
                       top: `${textPositionY}%`,
-                      left: '50%',
+                      left: `${textPositionX}%`,
                       transform: 'translate(-50%, -50%)',
-                      width: '92%'
+                      maxWidth: '92%'
                     }}
                   >
+                    {/* Visual Center Snapping Alignment Guides while dragging */}
+                    {isDraggingCaption && (
+                      <>
+                        {textPositionX === 50 && (
+                          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1px] h-[500px] border-l border-dashed border-yellow-400/70 pointer-events-none z-10" />
+                        )}
+                        {(textPositionY === 50 || textPositionY === 42) && (
+                          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[1px] border-t border-dashed border-yellow-400/70 pointer-events-none z-10" />
+                        )}
+                      </>
+                    )}
+
                     {isCurrentlyEditingThisSeg ? (
                       /* INLINE ON-VIDEO TEXT & SIZE EDITOR */
                       <div
@@ -1775,14 +1837,20 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                         </div>
                       </div>
                     ) : (
-                      /* INTERACTIVE CAPTION DISPLAY WITH FLOATING TOOLBAR */
+                      /* INTERACTIVE CAPTION DISPLAY WITH FLOATING TOOLBAR & DRAG */
                       <div
-                        className={`pointer-events-auto group relative cursor-pointer transition-all duration-150 rounded-xl p-2 select-none ${
+                        className={`pointer-events-auto group relative transition-all duration-150 rounded-xl p-2 select-none ${
                           captionHovered ? 'ring-2 ring-purple-500/80 bg-black/40 backdrop-blur-[2px] shadow-xl' : ''
-                        }`}
+                        } ${isDraggingCaption ? 'cursor-grabbing ring-2 ring-yellow-400/90 bg-black/60 shadow-2xl scale-105' : 'cursor-grab'}`}
+                        onMouseDown={(e) => {
+                          if (!isEditingActiveCaptionOnVideo) handleStartCaptionDrag(e)
+                        }}
+                        onTouchStart={(e) => {
+                          if (!isEditingActiveCaptionOnVideo) handleStartCaptionDrag(e)
+                        }}
                         onMouseEnter={() => setCaptionHovered(true)}
                         onMouseLeave={() => {
-                          if (!isEditingActiveCaptionOnVideo) setCaptionHovered(false)
+                          if (!isEditingActiveCaptionOnVideo && !isDraggingCaption) setCaptionHovered(false)
                         }}
                         onClick={(e) => {
                           e.stopPropagation()
@@ -1794,14 +1862,34 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                           setEditingSegmentText(activeSeg.text)
                           setIsEditingActiveCaptionOnVideo(true)
                         }}
-                        title="Click or double-click to edit text & adjust font size"
+                        title="Click and drag to move anywhere • Double click to edit text"
                       >
+                        {/* Position Indicator Badge while dragging */}
+                        {isDraggingCaption && (
+                          <div className="absolute -top-7 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full bg-yellow-400 text-black font-mono font-extrabold text-[10px] shadow-lg whitespace-nowrap z-50">
+                            X: {textPositionX}% • Y: {textPositionY}%
+                          </div>
+                        )}
+
                         {/* Floating On-Video Caption Toolbar */}
-                        {captionHovered && (
+                        {(captionHovered || isDraggingCaption) && !isDraggingCaption && (
                           <div
                             className="absolute -top-11 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-[#0c0d18]/95 border border-purple-500/50 shadow-2xl backdrop-blur-md px-2 py-1 rounded-full text-xs z-40 select-none animate-in fade-in zoom-in-95 duration-100 whitespace-nowrap"
                             onClick={(e) => e.stopPropagation()}
                           >
+                            {/* Drag Handle */}
+                            <div
+                              onMouseDown={handleStartCaptionDrag}
+                              onTouchStart={handleStartCaptionDrag}
+                              className="px-1.5 py-0.5 rounded-full bg-purple-950 hover:bg-purple-800 text-purple-200 hover:text-white flex items-center gap-1 text-[10px] font-bold border border-purple-700/60 cursor-grab active:cursor-grabbing transition-colors"
+                              title="Click and drag to move caption freely across the video screen"
+                            >
+                              <Move className="w-2.5 h-2.5 text-purple-400" />
+                              <span className="hidden sm:inline">Move</span>
+                            </div>
+
+                            <div className="w-[1px] h-3 bg-zinc-700 mx-0.5" />
+
                             {/* Reduce Caption Size */}
                             <button
                               type="button"
@@ -1886,21 +1974,68 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                               <span>Edit</span>
                             </button>
 
-                            {/* Nudge Position Buttons */}
-                            <div className="flex items-center gap-0.5 ml-0.5">
+                            <div className="w-[1px] h-3 bg-zinc-700 mx-0.5" />
+
+                            {/* 4-Way Directional Movement Pad: Sideways (Left/Right) & Vertical (Up/Down) */}
+                            <div className="flex items-center gap-0.5 bg-zinc-900/90 px-1 py-0.5 rounded-full border border-zinc-700/80">
+                              {/* Move Left */}
                               <button
                                 type="button"
-                                onClick={() => setTextPositionY(prev => Math.max(15, prev - 3))}
-                                className="w-4 h-4 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white flex items-center justify-center text-[9px]"
-                                title="Nudge caption up"
+                                onClick={() => {
+                                  setTextPositionX(prev => Math.max(12, prev - 4))
+                                  playSoundEffect('pop')
+                                }}
+                                className="w-4 h-4 rounded hover:bg-zinc-800 text-zinc-300 hover:text-white flex items-center justify-center text-[9px] cursor-pointer"
+                                title="Move sideways left"
+                              >
+                                ◀
+                              </button>
+                              {/* Center Snap */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTextPositionX(50)
+                                  setTextPositionY(42)
+                                  playSoundEffect('pop')
+                                }}
+                                className="w-4 h-4 rounded hover:bg-purple-900 text-purple-300 hover:text-white flex items-center justify-center text-[9px] cursor-pointer"
+                                title="Snap to center (X: 50%, Y: 42%)"
+                              >
+                                <Crosshair className="w-2.5 h-2.5" />
+                              </button>
+                              {/* Move Right */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTextPositionX(prev => Math.min(88, prev + 4))
+                                  playSoundEffect('pop')
+                                }}
+                                className="w-4 h-4 rounded hover:bg-zinc-800 text-zinc-300 hover:text-white flex items-center justify-center text-[9px] cursor-pointer"
+                                title="Move sideways right"
+                              >
+                                ▶
+                              </button>
+                              {/* Move Up */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTextPositionY(prev => Math.max(10, prev - 4))
+                                  playSoundEffect('pop')
+                                }}
+                                className="w-4 h-4 rounded hover:bg-zinc-800 text-zinc-300 hover:text-white flex items-center justify-center text-[9px] cursor-pointer"
+                                title="Move up"
                               >
                                 ▲
                               </button>
+                              {/* Move Down */}
                               <button
                                 type="button"
-                                onClick={() => setTextPositionY(prev => Math.min(85, prev + 3))}
-                                className="w-4 h-4 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white flex items-center justify-center text-[9px]"
-                                title="Nudge caption down"
+                                onClick={() => {
+                                  setTextPositionY(prev => Math.min(90, prev + 4))
+                                  playSoundEffect('pop')
+                                }}
+                                className="w-4 h-4 rounded hover:bg-zinc-800 text-zinc-300 hover:text-white flex items-center justify-center text-[9px] cursor-pointer"
+                                title="Move down"
                               >
                                 ▼
                               </button>
@@ -2705,6 +2840,196 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                       </button>
                     )
                   })}
+                </div>
+              </div>
+
+              {/* Caption Movement & Alignment (Up / Down / Sideways / Center) */}
+              <div className="p-3 rounded-xl bg-[#141522] border border-[#23253b] space-y-3 shrink-0 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Move className="h-3.5 w-3.5 text-purple-400" />
+                    <span className="text-xs font-bold text-zinc-200">Move Caption Position</span>
+                    <span className="text-[10px] text-zinc-400">(Up, Down, Sideways)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-mono font-bold text-purple-300 bg-purple-950/70 border border-purple-800/60 px-2 py-0.5 rounded-full">
+                      X: {textPositionX}% • Y: {textPositionY}%
+                    </span>
+                    {(textPositionX !== 50 || textPositionY !== 42) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTextPositionX(50)
+                          setTextPositionY(42)
+                          playSoundEffect('pop')
+                        }}
+                        className="text-[10px] text-zinc-400 hover:text-purple-300 underline cursor-pointer"
+                        title="Reset position to center (50%, 42%)"
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Vertical Movement: Up / Down */}
+                <div className="space-y-1.5 bg-[#0e0f19] p-2 rounded-lg border border-[#1e2030]">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-300 font-semibold flex items-center gap-1">
+                      <span>↕ Vertical:</span>
+                      <span className="text-purple-300 font-mono text-[10px]">
+                        {textPositionY <= 25 ? 'Top' : textPositionY <= 45 ? 'Upper Chest' : textPositionY <= 60 ? 'Center' : 'Bottom'} ({textPositionY}%)
+                      </span>
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTextPositionY(prev => Math.max(10, prev - 4))
+                          playSoundEffect('pop')
+                        }}
+                        className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-purple-600 text-zinc-200 hover:text-white text-[10px] font-bold border border-zinc-700 transition-colors cursor-pointer"
+                        title="Move caption higher"
+                      >
+                        ▲ Up
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTextPositionY(prev => Math.min(90, prev + 4))
+                          playSoundEffect('pop')
+                        }}
+                        className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-purple-600 text-zinc-200 hover:text-white text-[10px] font-bold border border-zinc-700 transition-colors cursor-pointer"
+                        title="Move caption lower"
+                      >
+                        ▼ Down
+                      </button>
+                    </div>
+                  </div>
+
+                  <input
+                    type="range"
+                    min={10}
+                    max={90}
+                    step={1}
+                    value={textPositionY}
+                    onChange={(e) => setTextPositionY(parseInt(e.target.value))}
+                    className="w-full accent-purple-500 cursor-pointer h-1.5 bg-zinc-800 rounded"
+                    title={`Vertical position: ${textPositionY}%`}
+                  />
+
+                  <div className="grid grid-cols-5 gap-1 pt-0.5 text-center font-mono">
+                    {[
+                      { label: 'Top', val: 20 },
+                      { label: 'Chest', val: 42 },
+                      { label: 'Center', val: 50 },
+                      { label: 'Lower', val: 68 },
+                      { label: 'Bottom', val: 82 }
+                    ].map((p) => (
+                      <button
+                        key={p.label}
+                        type="button"
+                        onClick={() => {
+                          setTextPositionY(p.val)
+                          playSoundEffect('pop')
+                        }}
+                        className={`py-0.5 px-1 rounded text-[10px] font-semibold transition-all cursor-pointer ${
+                          Math.abs(textPositionY - p.val) <= 2
+                            ? 'bg-purple-950/90 border border-purple-500 text-purple-200 font-bold'
+                            : 'bg-[#141522] border border-[#23253b] text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Horizontal Movement: Sideways & Center */}
+                <div className="space-y-1.5 bg-[#0e0f19] p-2 rounded-lg border border-[#1e2030]">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-zinc-300 font-semibold flex items-center gap-1">
+                      <span>↔ Sideways:</span>
+                      <span className="text-purple-300 font-mono text-[10px]">
+                        {textPositionX <= 35 ? 'Left' : textPositionX >= 65 ? 'Right' : 'Center'} ({textPositionX}%)
+                      </span>
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTextPositionX(prev => Math.max(12, prev - 4))
+                          playSoundEffect('pop')
+                        }}
+                        className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-purple-600 text-zinc-200 hover:text-white text-[10px] font-bold border border-zinc-700 transition-colors cursor-pointer"
+                        title="Move caption left"
+                      >
+                        ◀ Left
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTextPositionX(50)
+                          playSoundEffect('pop')
+                        }}
+                        className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-purple-600 text-zinc-200 hover:text-white text-[10px] font-bold border border-zinc-700 transition-colors cursor-pointer"
+                        title="Center sideways"
+                      >
+                        ⌖ Center
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTextPositionX(prev => Math.min(88, prev + 4))
+                          playSoundEffect('pop')
+                        }}
+                        className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-purple-600 text-zinc-200 hover:text-white text-[10px] font-bold border border-zinc-700 transition-colors cursor-pointer"
+                        title="Move caption right"
+                      >
+                        ▶ Right
+                      </button>
+                    </div>
+                  </div>
+
+                  <input
+                    type="range"
+                    min={15}
+                    max={85}
+                    step={1}
+                    value={textPositionX}
+                    onChange={(e) => setTextPositionX(parseInt(e.target.value))}
+                    className="w-full accent-purple-500 cursor-pointer h-1.5 bg-zinc-800 rounded"
+                    title={`Horizontal sideways position: ${textPositionX}%`}
+                  />
+
+                  <div className="grid grid-cols-3 gap-1 pt-0.5 text-center font-mono">
+                    {[
+                      { label: 'Left (22%)', val: 22 },
+                      { label: 'Center (50%)', val: 50 },
+                      { label: 'Right (78%)', val: 78 }
+                    ].map((p) => (
+                      <button
+                        key={p.label}
+                        type="button"
+                        onClick={() => {
+                          setTextPositionX(p.val)
+                          playSoundEffect('pop')
+                        }}
+                        className={`py-0.5 px-1 rounded text-[10px] font-semibold transition-all cursor-pointer ${
+                          Math.abs(textPositionX - p.val) <= 2
+                            ? 'bg-purple-950/90 border border-purple-500 text-purple-200 font-bold'
+                            : 'bg-[#141522] border border-[#23253b] text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="text-[10px] text-zinc-500 flex items-center gap-1 pt-0.5">
+                  <span className="text-purple-400 font-bold">💡 Tip:</span>
+                  <span>You can also click and drag the caption directly anywhere on the video screen!</span>
                 </div>
               </div>
 
@@ -3636,45 +3961,90 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                 </div>
               </div>
 
-              {/* Subtitle Positioning (Move Subtitle) */}
-              <div className="space-y-2 p-3 rounded-xl bg-[#12131f] border border-[#222436]">
+              {/* Subtitle Positioning (Move Subtitle Up, Down, Sideways) */}
+              <div className="space-y-3 p-3 rounded-xl bg-[#12131f] border border-[#222436]">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold text-zinc-200 flex items-center gap-1.5">
                     <Move className="h-3.5 w-3.5 text-purple-400" />
                     <span>Move Subtitle Position</span>
                   </label>
-                  <span className="text-[10px] font-mono text-purple-300 font-bold">{textPositionY}% from top</span>
+                  <span className="text-[10px] font-mono text-purple-300 font-bold">
+                    X: {textPositionX}% • Y: {textPositionY}%
+                  </span>
                 </div>
 
-                <input
-                  type="range"
-                  min={10}
-                  max={90}
-                  step={1}
-                  value={textPositionY}
-                  onChange={(e) => setTextPositionY(parseInt(e.target.value))}
-                  className="w-full accent-purple-500 cursor-pointer h-1.5"
-                />
+                {/* Vertical Up / Down */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                    <span>Vertical (Up / Down)</span>
+                    <span className="font-mono text-purple-300 text-[10px]">{textPositionY}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={10}
+                    max={90}
+                    step={1}
+                    value={textPositionY}
+                    onChange={(e) => setTextPositionY(parseInt(e.target.value))}
+                    className="w-full accent-purple-500 cursor-pointer h-1.5"
+                  />
+                  <div className="grid grid-cols-3 gap-1.5 pt-0.5 text-xs">
+                    {[
+                      { label: 'Top (20%)', val: 20 },
+                      { label: 'Center (42%)', val: 42 },
+                      { label: 'Bottom (80%)', val: 80 }
+                    ].map((pos) => (
+                      <button
+                        key={pos.label}
+                        type="button"
+                        onClick={() => setTextPositionY(pos.val)}
+                        className={`py-1 rounded-lg border text-center text-xs transition-colors cursor-pointer ${
+                          textPositionY === pos.val
+                            ? 'bg-purple-950/60 border-purple-500 text-purple-200 font-bold'
+                            : 'bg-[#0d0e17] border-[#1e202f] text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {pos.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-                <div className="grid grid-cols-3 gap-2 pt-1 text-xs">
-                  {[
-                    { label: 'Top (20%)', val: 20 },
-                    { label: 'Center (42%)', val: 42 },
-                    { label: 'Bottom (80%)', val: 80 }
-                  ].map((pos) => (
-                    <button
-                      key={pos.label}
-                      type="button"
-                      onClick={() => setTextPositionY(pos.val)}
-                      className={`py-1.5 rounded-lg border text-center text-xs transition-colors cursor-pointer ${
-                        textPositionY === pos.val
-                          ? 'bg-purple-950/60 border-purple-500 text-purple-200 font-bold'
-                          : 'bg-[#0d0e17] border-[#1e202f] text-zinc-400 hover:text-zinc-200'
-                      }`}
-                    >
-                      {pos.label}
-                    </button>
-                  ))}
+                {/* Horizontal Sideways / Center */}
+                <div className="space-y-1 pt-1 border-t border-[#1e202f]">
+                  <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                    <span>Sideways (Left / Center / Right)</span>
+                    <span className="font-mono text-purple-300 text-[10px]">{textPositionX}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={15}
+                    max={85}
+                    step={1}
+                    value={textPositionX}
+                    onChange={(e) => setTextPositionX(parseInt(e.target.value))}
+                    className="w-full accent-purple-500 cursor-pointer h-1.5"
+                  />
+                  <div className="grid grid-cols-3 gap-1.5 pt-0.5 text-xs">
+                    {[
+                      { label: 'Left (22%)', val: 22 },
+                      { label: 'Center (50%)', val: 50 },
+                      { label: 'Right (78%)', val: 78 }
+                    ].map((pos) => (
+                      <button
+                        key={pos.label}
+                        type="button"
+                        onClick={() => setTextPositionX(pos.val)}
+                        className={`py-1 rounded-lg border text-center text-xs transition-colors cursor-pointer ${
+                          textPositionX === pos.val
+                            ? 'bg-purple-950/60 border-purple-500 text-purple-200 font-bold'
+                            : 'bg-[#0d0e17] border-[#1e202f] text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {pos.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
 

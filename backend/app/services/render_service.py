@@ -199,20 +199,53 @@ def generate_ass_subtitle_file(
         outline_color = "&H00000000"
         shadow_color = "&H80000000"
 
-    # Apply customizable vertical positioning (Top, Center, Bottom, or % from top)
+    # Apply customizable horizontal and vertical positioning
+    # Supports "X%,Y%" (e.g. "50%,42%"), keywords ("top", "bottom", "center", "left", "right"), or single "Y%"
     pos_str = str(text_position).strip().lower()
-    if pos_str == "top":
-        margin_v = int(play_res_y * 0.78)
+    pos_x_pct = 50.0
+    pos_y_pct = 42.0
+
+    if "," in pos_str:
+        parts = [p.strip() for p in pos_str.split(",", 1)]
+        x_part, y_part = parts[0], parts[1]
+        if x_part == "left":
+            pos_x_pct = 22.0
+        elif x_part == "right":
+            pos_x_pct = 78.0
+        elif x_part == "center":
+            pos_x_pct = 50.0
+        else:
+            try:
+                pos_x_pct = max(10.0, min(90.0, float(x_part.replace("%", ""))))
+            except Exception:
+                pos_x_pct = 50.0
+
+        if y_part == "top":
+            pos_y_pct = 20.0
+        elif y_part == "bottom":
+            pos_y_pct = 82.0
+        elif y_part == "center":
+            pos_y_pct = 50.0
+        else:
+            try:
+                pos_y_pct = max(8.0, min(92.0, float(y_part.replace("%", ""))))
+            except Exception:
+                pos_y_pct = 42.0
+    elif pos_str == "top":
+        pos_y_pct = 20.0
     elif pos_str == "bottom":
-        margin_v = int(play_res_y * 0.12)
+        pos_y_pct = 82.0
     elif pos_str == "center":
-        margin_v = int(play_res_y * 0.42)
+        pos_y_pct = 50.0
     else:
         try:
-            pct_from_top = float(pos_str.replace("%", "").strip())
-            margin_v = int(play_res_y * max(0.08, min(0.92, (100.0 - pct_from_top) / 100.0)))
+            pos_y_pct = max(8.0, min(92.0, float(pos_str.replace("%", ""))))
         except Exception:
-            margin_v = int(play_res_y * 0.42)
+            pos_y_pct = 42.0
+
+    pos_x = int(play_res_x * (pos_x_pct / 100.0))
+    pos_y = int(play_res_y * (pos_y_pct / 100.0))
+    margin_v = max(20, play_res_y - pos_y)
 
     # Apply customizable font size scale factor (e.g. 0.8x to 2.0x)
     try:
@@ -255,17 +288,13 @@ def generate_ass_subtitle_file(
 
             start_str = format_ass_time(c_start)
             end_str = format_ass_time(c_end)
-            pos_x = play_res_x // 2
-            pos_y = play_res_y - margin_v
-            # Lock vertical center with \an5\pos to completely eliminate vertical bouncing / jumping up and down
+            # Lock position with \an5\pos to completely eliminate vertical bouncing / jumping up and down
             dialogue_lines.append(
                 f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})}}{display_word}"
             )
     elif clip_words:
         # Group words into short 3-4 word rhythmic chunks
         chunk_size = 4
-        pos_x = play_res_x // 2
-        pos_y = play_res_y - margin_v
         for i in range(0, len(clip_words), chunk_size):
             chunk = clip_words[i:i + chunk_size]
             c_start = chunk[0]["start"]
@@ -282,8 +311,6 @@ def generate_ass_subtitle_file(
             )
     else:
         # Fallback to segment slices
-        pos_x = play_res_x // 2
-        pos_y = play_res_y - margin_v
         for seg in segments:
             s_start = seg.get("start", 0.0)
             s_end = seg.get("end", 0.0)
