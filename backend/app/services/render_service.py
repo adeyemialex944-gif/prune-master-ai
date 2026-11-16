@@ -156,7 +156,7 @@ def generate_ass_subtitle_file(
 
     # Determine if single-word or phrase rendering
     is_word_by_word = (
-        style_name in ("word_red", "word_yellow", "word_white", "default")
+        style_name in ("word_red", "word_yellow", "word_white", "dark_crisp", "default")
         or style_name.startswith("word_")
     )
 
@@ -178,20 +178,20 @@ def generate_ass_subtitle_file(
         outline_width = 8 if play_res_y >= 1920 else 5 if play_res_y >= 1280 else 4
         font_size = int(font_size * 1.25)
         margin_v = int(play_res_y * 0.38)
-    elif style_name == "word_white":
-        primary_color = "&H00FFFFFF"     # Crisp White
-        outline_color = "&H00000000"     # Pure Black outline
-        shadow_color = "&H80000000"
-        outline_width = 8 if play_res_y >= 1920 else 5 if play_res_y >= 1280 else 4
-        font_size = int(font_size * 1.25)
+    elif style_name in ("word_white", "dark_crisp"):
+        primary_color = "&H00FFFFFF"     # Crisp Pure White
+        outline_color = "&H00000000"     # Pure Black crisp outline
+        shadow_color = "&H90000000"      # Deep crisp dark shadow
+        outline_width = 9 if play_res_y >= 1920 else 6 if play_res_y >= 1280 else 4
+        font_size = int(font_size * 1.3)
         margin_v = int(play_res_y * 0.38)
     elif style_name in ("purple_pop", "phrase_purple"):
         primary_color = "&H00FFFFFF"
         outline_color = "&H0050186E"     # Deep Purple outline
         shadow_color = "&H80000000"
     elif style_name in ("clean_white", "phrase_white"):
-        primary_color = "&H00FFFFFF"
-        outline_color = "&H00151515"
+        primary_color = "&H00FFFFFF"     # Clean Crisp White
+        outline_color = "&H00000000"     # Pure Black outline
         shadow_color = "&H80000000"
     else:
         # Default phrase yellow

@@ -143,7 +143,7 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
   const [trimEnd, setTrimEnd] = useState<number>(clip.end_time)
   const [clipTitle, setClipTitle] = useState<string>(clip.title)
   const [aspectRatio, setAspectRatio] = useState<'9:16' | '16:9' | '1:1'>(() => parseAspectRatio(clip.aspect_ratio))
-  const [captionStyle, setCaptionStyle] = useState<string>(clip.caption_style || 'word_red')
+  const [captionStyle, setCaptionStyle] = useState<string>(clip.caption_style || 'dark_crisp')
   const [framingMode, setFramingMode] = useState<'smart_face' | 'blur' | 'crop'>('smart_face')
   const [resolution, setResolution] = useState<'4k' | '1080p' | '720p' | '480p'>('1080p')
   const [burnCaptions, setBurnCaptions] = useState<boolean>(true)
@@ -186,8 +186,8 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
   const [bgMusic, setBgMusic] = useState<string>(clip.bg_music || 'none')
   const [bgMusicVolume, setBgMusicVolume] = useState<number>(clip.bg_music_volume ? Math.round(clip.bg_music_volume * 100) : 25)
   const [transition, setTransition] = useState<string>(clip.transition || 'none')
-  const [watermark, setWatermark] = useState<boolean>(clip.watermark ?? true)
-  const [watermarkText, setWatermarkText] = useState<string>(clip.watermark_text || 'Prune Master AI')
+  const [watermark, setWatermark] = useState<boolean>(false)
+  const [watermarkText, setWatermarkText] = useState<string>('')
 
   // AI Voiceover (TTS) & Mic Voiceover State
   const [ttsScript, setTtsScript] = useState<string>('')
@@ -274,14 +274,14 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
     setTrimEnd(clip.end_time)
     setClipTitle(clip.title)
     setAspectRatio(parseAspectRatio(clip.aspect_ratio))
-    setCaptionStyle(clip.caption_style || 'word_red')
+    setCaptionStyle(clip.caption_style || 'dark_crisp')
     setVolumeLevel(clip.volume_level ? Math.round(clip.volume_level * 100) : 100)
     setRemoveSilence(clip.remove_silence || false)
     setBgMusic(clip.bg_music || 'none')
     setBgMusicVolume(clip.bg_music_volume ? Math.round(clip.bg_music_volume * 100) : 25)
     setTransition(clip.transition || 'none')
-    setWatermark(clip.watermark ?? true)
-    setWatermarkText(clip.watermark_text || 'Prune Master AI')
+    setWatermark(false)
+    setWatermarkText('')
     setRenderError(null)
     setRenderSuccess(false)
     setVideoCacheBuster(Date.now())
@@ -890,46 +890,109 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
               ctx.save()
               const capX = (textPositionX / 100) * outWidth
               const capY = (textPositionY / 100) * outHeight
-              const capFontSize = Math.round(28 * fontSizeScale * (outHeight / 1280) * 1.4)
+              const isWordPop = captionStyle.startsWith('word_') || captionStyle === 'dark_crisp' || captionStyle === 'default'
+
+              // Determine text to render: kinetic word-by-word pop or full segment text
+              let textToShow = activeSeg.text
+              if (isWordPop && activeSeg.words && activeSeg.words.length > 0) {
+                const match = activeSeg.words.find(w => currentT >= w.start && currentT <= w.end)
+                  || activeSeg.words.filter(w => w.start <= currentT).slice(-1)[0]
+                  || activeSeg.words[0]
+                if (match?.word) textToShow = match.word.toUpperCase()
+              }
+
+              const baseFs = isWordPop ? 28 : 20
+              const capFontSize = Math.round(baseFs * fontSizeScale * (outHeight / 1280) * 1.4)
               ctx.textAlign = 'center'
               ctx.textBaseline = 'middle'
-              ctx.font = `bold ${capFontSize}px sans-serif`
-              ctx.shadowColor = '#000000'
-              ctx.shadowBlur = 8
+              ctx.font = isWordPop
+                ? `900 ${capFontSize}px "Arial Black", Impact, sans-serif`
+                : `bold ${capFontSize}px sans-serif`
 
-              const textMetrics = ctx.measureText(activeSeg.text)
-              const boxW = Math.min(outWidth * 0.9, textMetrics.width + 36)
-              const boxH = capFontSize * 1.6
-              const boxX = capX - boxW / 2
-              const boxY = capY - boxH / 2
-              ctx.fillStyle = 'rgba(0, 0, 0, 0.65)'
-              ctx.beginPath()
-              if (ctx.roundRect) {
-                ctx.roundRect(boxX, boxY, boxW, boxH, 12)
-              } else {
-                ctx.fillRect(boxX, boxY, boxW, boxH)
+              // Theme configuration based on selected captionStyle
+              let textColor = '#ffffff'
+              let strokeColor = '#000000'
+              let strokeWidth = Math.max(4, Math.round(capFontSize * 0.16))
+              let hasBackgroundBox = false
+              let boxBgColor = 'rgba(0, 0, 0, 0.65)'
+
+              if (captionStyle === 'word_white') {
+                // Crisp White: Pure crisp white text with thick black outline & drop shadow
+                textColor = '#ffffff'
+                strokeColor = '#000000'
+                strokeWidth = Math.max(5, Math.round(capFontSize * 0.2))
+              } else if (captionStyle === 'dark_crisp') {
+                // Dark Crispy: Crisp pure white text with sleek dark charcoal rounded box
+                textColor = '#ffffff'
+                strokeColor = '#000000'
+                strokeWidth = Math.max(3, Math.round(capFontSize * 0.12))
+                hasBackgroundBox = true
+                boxBgColor = 'rgba(10, 10, 16, 0.88)'
+              } else if (captionStyle === 'clean_white') {
+                // Clean Standard White
+                textColor = '#ffffff'
+                strokeColor = '#000000'
+                strokeWidth = Math.max(2, Math.round(capFontSize * 0.1))
+                hasBackgroundBox = true
+                boxBgColor = 'rgba(0, 0, 0, 0.6)'
+              } else if (captionStyle === 'word_red') {
+                // Red viral glow with white stroke
+                textColor = '#ef4444'
+                strokeColor = '#ffffff'
+                strokeWidth = Math.max(4, Math.round(capFontSize * 0.16))
+              } else if (captionStyle === 'word_yellow') {
+                // Vibrant yellow with black border
+                textColor = '#facc15'
+                strokeColor = '#000000'
+                strokeWidth = Math.max(4, Math.round(capFontSize * 0.16))
+              } else if (captionStyle === 'phrase_purple') {
+                textColor = '#ffffff'
+                strokeColor = '#3b0764'
+                strokeWidth = Math.max(2, Math.round(capFontSize * 0.1))
+                hasBackgroundBox = true
+                boxBgColor = 'rgba(88, 28, 135, 0.85)'
+              } else if (captionStyle === 'phrase_yellow') {
+                textColor = '#facc15'
+                strokeColor = '#000000'
+                strokeWidth = Math.max(3, Math.round(capFontSize * 0.14))
+                hasBackgroundBox = true
+                boxBgColor = 'rgba(0, 0, 0, 0.75)'
               }
-              ctx.fill()
 
-              ctx.strokeStyle = '#000000'
-              ctx.lineWidth = Math.max(3, Math.round(capFontSize * 0.16))
-              ctx.strokeText(activeSeg.text, capX, capY)
-              ctx.fillStyle = '#facc15'
-              ctx.fillText(activeSeg.text, capX, capY)
+              // Draw dark crispy background box if needed
+              if (hasBackgroundBox) {
+                const textMetrics = ctx.measureText(textToShow)
+                const boxW = Math.min(outWidth * 0.92, textMetrics.width + 36)
+                const boxH = capFontSize * 1.55
+                const boxX = capX - boxW / 2
+                const boxY = capY - boxH / 2
+                ctx.fillStyle = boxBgColor
+                ctx.beginPath()
+                if (ctx.roundRect) {
+                  ctx.roundRect(boxX, boxY, boxW, boxH, 12)
+                } else {
+                  ctx.fillRect(boxX, boxY, boxW, boxH)
+                }
+                ctx.fill()
+              }
+
+              // Deep drop shadow
+              ctx.shadowColor = 'rgba(0, 0, 0, 0.95)'
+              ctx.shadowBlur = 12
+
+              // Outer stroke
+              ctx.strokeStyle = strokeColor
+              ctx.lineWidth = strokeWidth
+              ctx.strokeText(textToShow, capX, capY)
+
+              // Text fill
+              ctx.fillStyle = textColor
+              ctx.fillText(textToShow, capX, capY)
               ctx.restore()
             }
           }
 
-          // Draw Watermark if enabled
-          if (watermark && watermarkText) {
-            ctx.save()
-            ctx.font = 'bold 22px sans-serif'
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.75)'
-            ctx.shadowColor = 'rgba(0,0,0,0.8)'
-            ctx.shadowBlur = 6
-            ctx.fillText(watermarkText, 24, 44)
-            ctx.restore()
-          }
+          // Watermark is completely disabled / removed from exported video
 
           // Draw Custom Overlays & Animated Outros
           const activeOverlays = customOverlays.filter(o => !o.erased && currentT >= o.start_time && currentT <= o.end_time)
@@ -1083,8 +1146,8 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
         volume_level: (volumeLevel / 100).toString(),
         vocal_boost: vocalBoost.toString(),
         remove_silence: removeSilence.toString(),
-        watermark: watermark.toString(),
-        watermark_text: watermarkText.trim(),
+        watermark: 'false',
+        watermark_text: '',
         transition: transition,
         bg_music: bgMusic,
         bg_music_volume: (bgMusicVolume / 100).toString()
@@ -1104,8 +1167,8 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
         volume_level: volumeLevel / 100,
         vocal_boost: vocalBoost,
         remove_silence: removeSilence,
-        watermark: watermark,
-        watermark_text: watermarkText.trim(),
+        watermark: false,
+        watermark_text: '',
         transition: transition,
         bg_music: bgMusic,
         bg_music_volume: bgMusicVolume / 100,
@@ -1701,14 +1764,6 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                 </div>
               )}
 
-              {/* LIVE WATERMARK PREVIEW */}
-              {watermark && (
-                <div className="absolute bottom-3 left-3 px-2 py-0.5 rounded bg-black/60 backdrop-blur-sm text-[10px] font-mono text-zinc-300 border border-zinc-700/60 pointer-events-none z-30 flex items-center gap-1">
-                  <span className="text-purple-400 font-bold">✨</span>
-                  <span>{watermarkText || 'Prune Master AI'}</span>
-                </div>
-              )}
-
               {/* LIVE SUBTITLE CAPTION PREVIEW */}
               {showOverlayPreview && burnCaptions && (() => {
                 const activeSeg = segments.find(
@@ -1716,7 +1771,7 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                 )
                 if (!activeSeg) return null
 
-                const isWordPop = captionStyle.startsWith('word_') || captionStyle === 'default'
+                const isWordPop = captionStyle.startsWith('word_') || captionStyle === 'dark_crisp' || captionStyle === 'default'
 
                 // Find active word with smooth continuity so captions never jump back and forth
                 let currentWordText = ''
@@ -2051,6 +2106,11 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                               color: textColor,
                               textShadow: '0 0 12px rgba(0,0,0,0.95), 0 2px 4px #000, 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000',
                               WebkitTextStroke: captionStyle === 'word_red' ? '1.5px #ffffff' : '1.5px #000000',
+                              background: captionStyle === 'dark_crisp' ? 'rgba(10, 10, 16, 0.88)' : undefined,
+                              padding: captionStyle === 'dark_crisp' ? '6px 16px' : undefined,
+                              borderRadius: captionStyle === 'dark_crisp' ? '10px' : undefined,
+                              backdropFilter: captionStyle === 'dark_crisp' ? 'blur(6px)' : undefined,
+                              border: captionStyle === 'dark_crisp' ? '1px solid rgba(255, 255, 255, 0.12)' : undefined,
                               lineHeight: '1.2'
                             }}
                           >
@@ -2063,10 +2123,11 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                               fontSize: `${Math.round(18 * fontSizeScale)}px`,
                               color: textColor,
                               textShadow: '0 0 8px rgba(0,0,0,0.9), 1px 1px 2px #000, -1px -1px 2px #000',
-                              background: captionStyle === 'phrase_purple' ? 'rgba(88, 28, 135, 0.75)' : 'rgba(0, 0, 0, 0.55)',
+                              background: captionStyle === 'phrase_purple' ? 'rgba(88, 28, 135, 0.75)' : captionStyle === 'dark_crisp' ? 'rgba(10, 10, 16, 0.88)' : 'rgba(0, 0, 0, 0.55)',
                               padding: '6px 14px',
                               borderRadius: '8px',
                               backdropFilter: 'blur(4px)',
+                              border: captionStyle === 'dark_crisp' ? '1px solid rgba(255, 255, 255, 0.12)' : undefined,
                               lineHeight: '1.3'
                             }}
                           >
@@ -2648,7 +2709,7 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                     onClick={() => {
                       playSoundEffect('pop')
                       setBurnCaptions(true)
-                      if (captionStyle === 'none') setCaptionStyle('word_yellow')
+                      if (captionStyle === 'none') setCaptionStyle('dark_crisp')
                       if (segments.length > 0 && segments.every(s => s.erased)) {
                         setSegments(prev => prev.map(s => ({ ...s, erased: false })))
                       }
@@ -2721,12 +2782,12 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                 </div>
                 <div className="grid grid-cols-3 gap-1.5 text-[10px]">
                   {[
-                    { id: 'word_red', label: '🔴 1 Word Red', desc: 'Viral Red Glow' },
+                    { id: 'dark_crisp', label: '🖤 Dark Crispy', desc: 'Dark Box Crisp White' },
+                    { id: 'word_white', label: '⚪ Crisp White', desc: 'Thick Dark Outline' },
                     { id: 'word_yellow', label: '🟡 1 Word Yellow', desc: 'Black Border Pop' },
-                    { id: 'word_white', label: '⚪ Crisp White', desc: 'Minimal Pop' },
+                    { id: 'word_red', label: '🔴 1 Word Red', desc: 'Viral Red Glow' },
                     { id: 'phrase_purple', label: '💜 3 Words Purple', desc: 'Headline Bar' },
-                    { id: 'phrase_yellow', label: '💬 3 Words Yellow', desc: 'Subtitle Banner' },
-                    { id: 'clean_white', label: '🤍 Clean Standard', desc: 'Classic' }
+                    { id: 'clean_white', label: '🤍 Clean Standard', desc: 'Classic Banner' }
                   ].map((st) => (
                     <button
                       key={st.id}
