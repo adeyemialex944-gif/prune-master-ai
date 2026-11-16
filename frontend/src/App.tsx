@@ -5184,11 +5184,36 @@ export default function App() {
                               {!isTranscribed && !isTranscribing && (
                                 <div className="space-y-2">
                                   <button
-                                    onClick={() => triggerAutoCut(vid.id)}
-                                    className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold transition-all shadow-md"
+                                    type="button"
+                                    onClick={() => {
+                                      setEditorClip({
+                                        id: 0,
+                                        video_id: vid.id,
+                                        title: vid.original_name.replace(/\.[^/.]+$/, ''),
+                                        start_time: 0,
+                                        end_time: vid.duration_seconds || 60,
+                                        aspect_ratio: '9:16',
+                                        file_path: `/media/uploads/${vid.filename}`,
+                                        thumbnail_path: vid.thumbnail_path,
+                                        status: 'ready',
+                                        caption_style: 'word_red',
+                                        created_at: vid.created_at
+                                      })
+                                      setActiveTab('editor')
+                                    }}
+                                    className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-xs font-bold transition-all shadow-md cursor-pointer"
+                                    title="Open in Studio Workspace to cut on your PC with 0 MB cloud usage"
                                   >
                                     <Scissors className="h-4 w-4" />
-                                    <span>⚡ 1-Click: Auto-Cut into 9:16 Short</span>
+                                    <span>🎬 Cut on Your PC (0 MB Cloud)</span>
+                                  </button>
+                                  <button
+                                    onClick={() => triggerAutoCut(vid.id)}
+                                    className="w-full flex items-center justify-center gap-2 py-1.5 px-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[11px] font-semibold transition-all border border-zinc-700/60"
+                                    title="AI background auto-cutter on server"
+                                  >
+                                    <Zap className="h-3.5 w-3.5 text-amber-400" />
+                                    <span>⚡ 1-Click Auto-Cut (Cloud)</span>
                                   </button>
                                   <div className="flex items-center gap-2 pt-0.5">
                                     <select

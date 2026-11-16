@@ -529,15 +529,15 @@ def render_vertical_clip(
     if vocal_boost:
         af_filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
 
-    # Ultra-HD Quality vs Standard
+    # Ultra-HD Quality vs Standard (Memory-optimized for 512MB RAM environment)
     is_4k = str(resolution).lower() == "4k"
-    crf_val = "18" if is_4k else "22"
-    preset_val = "fast" if is_4k else "veryfast"
+    crf_val = "18" if is_4k else "23"
+    preset_val = "veryfast" if is_4k else "ultrafast"
 
     cmd = [
         ffmpeg_bin,
         "-y",
-        "-threads", "0",
+        "-threads", "2",
         "-ss", str(start_time),
         "-t", str(duration),
         "-i", str(source_video_path),
@@ -553,7 +553,7 @@ def render_vertical_clip(
 
     cmd.extend([
         "-c:a", "aac",
-        "-b:a", "256k" if is_4k else "192k",
+        "-b:a", "192k",
         "-movflags", "+faststart",
         str(output_clip_path)
     ])
@@ -562,22 +562,26 @@ def render_vertical_clip(
         progress_callback(25, f"Encoding {aspect_label} video and burning captions...")
 
     try:
+        # Crucial: stdout MUST be DEVNULL so child process doesn't block on unread pipe buffers (causes 26% freeze)
         process = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace"
         )
 
-        # Parse FFmpeg progress
+        stderr_lines = []
         time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
         while True:
             line = process.stderr.readline()
             if not line and process.poll() is not None:
                 break
             if line:
+                stderr_lines.append(line)
+                if len(stderr_lines) > 40:
+                    stderr_lines.pop(0)
                 match = time_pattern.search(line)
                 if match:
                     hours, mins, secs = match.groups()
@@ -587,10 +591,15 @@ def render_vertical_clip(
                     if progress_callback:
                         progress_callback(pct, f"Rendering {aspect_label} frames ({int(current_secs)}s / {int(duration)}s)...")
 
-        process.wait()
+        try:
+            process.wait(timeout=180)  # Maximum 3 minutes execution ceiling to prevent hung cloud processes
+        except subprocess.TimeoutExpired:
+            process.kill()
+            logger.error("FFmpeg render timed out after 180s - process killed.")
+            return False
 
         if process.returncode != 0:
-            err_output = process.stderr.read()
+            err_output = "".join(stderr_lines[-15:])
             logger.error(f"FFmpeg render failed: {err_output}")
             return False
 
