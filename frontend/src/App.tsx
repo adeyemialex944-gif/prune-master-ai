@@ -1658,6 +1658,28 @@ export default function App() {
     }
   }
 
+  const handleImportVideoToEditor = (file: File) => {
+    const objectUrl = URL.createObjectURL(file)
+    const newClip: ClipItem = {
+      id: Date.now(),
+      video_id: 0,
+      title: file.name.replace(/\.[^/.]+$/, ''),
+      start_time: 0,
+      end_time: 60,
+      aspect_ratio: '9:16',
+      file_path: objectUrl,
+      thumbnail_path: null,
+      status: 'completed',
+      caption_style: 'word_red',
+      created_at: new Date().toISOString(),
+      localBlobUrl: objectUrl,
+      rawBlob: file,
+      isDeviceStored: true
+    }
+    setEditorClip(newClip)
+    setActiveTab('editor')
+  }
+
   const startMiningPipeline = async (videoId: number) => {
     try {
       const vid = videos.find(v => v.id === videoId) || uploadedVideoResult
@@ -5378,30 +5400,78 @@ export default function App() {
                   }}
                 />
               ) : (
-                <div className="p-12 rounded-3xl bg-[#12131f] border border-[#232538] text-center space-y-4 max-w-xl mx-auto shadow-2xl">
-                  <div className="h-16 w-16 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-600 flex items-center justify-center text-white mx-auto shadow-xl">
-                    <Scissors className="h-8 w-8" />
+                <div className="max-w-3xl mx-auto space-y-6">
+                  {/* IMPORT EXTERNAL VIDEO DROPZONE */}
+                  <div className="p-8 sm:p-12 rounded-3xl bg-gradient-to-b from-[#141524] to-[#0e0f17] border-2 border-dashed border-purple-500/40 hover:border-purple-400 text-center space-y-4 shadow-2xl transition-all">
+                    <input
+                      type="file"
+                      id="editor-import-file-input"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0]
+                        if (file) handleImportVideoToEditor(file)
+                      }}
+                      accept="video/mp4,video/quicktime,video/webm,video/*"
+                      className="hidden"
+                    />
+                    <div className="h-16 w-16 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-pink-600 flex items-center justify-center text-white mx-auto shadow-xl transform hover:scale-105 transition-transform">
+                      <Upload className="h-8 w-8" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-bold text-white">Import Any Video to Master Editor</h3>
+                      <p className="text-xs text-zinc-400 mt-1 max-w-md mx-auto">
+                        Drag and drop any external video (.mp4, .mov) from your phone or PC. Edit, cut sections with the moving playhead razor, add animated captions, and export directly — without needing CapCut!
+                      </p>
+                    </div>
+                    <div className="pt-2">
+                      <label
+                        htmlFor="editor-import-file-input"
+                        className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold transition-all shadow-lg cursor-pointer transform hover:scale-[1.02]"
+                      >
+                        <Upload className="h-4 w-4" />
+                        <span>Choose Video File from PC / Phone</span>
+                      </label>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="text-xl font-bold text-white">No Clip Selected for Editing</h3>
-                    <p className="text-xs text-zinc-400 mt-1 max-w-sm mx-auto">
-                      Select any mined short from your gallery or choose a clip from the Creator Showcase to open in the Master Editor Studio.
-                    </p>
-                  </div>
-                  <div className="flex items-center justify-center gap-3 pt-2">
-                    <button
-                      onClick={() => setActiveTab('clips')}
-                      className="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-all shadow-md"
-                    >
-                      Browse Mined Shorts
-                    </button>
-                    <button
-                      onClick={() => setActiveTab('showcase')}
-                      className="px-5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold transition-all border border-zinc-700"
-                    >
-                      Explore Creator Showcase
-                    </button>
-                  </div>
+
+                  {/* OR PICK FROM EXISTING MINED SHORTS */}
+                  {clips.length > 0 && (
+                    <div className="p-6 rounded-2xl bg-[#12131f] border border-[#232538] space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-semibold text-zinc-200">Or Open an Existing Mined Short:</h4>
+                        <button
+                          onClick={() => setActiveTab('clips')}
+                          className="text-xs text-purple-400 hover:text-purple-300 font-medium cursor-pointer"
+                        >
+                          View All ({clips.length}) &rarr;
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        {clips.slice(0, 4).map(c => (
+                          <button
+                            key={c.id}
+                            onClick={() => {
+                              setEditorClip(c)
+                              setActiveTab('editor')
+                            }}
+                            className="p-2 rounded-xl bg-zinc-900/80 hover:bg-zinc-800 border border-zinc-800 hover:border-purple-500/50 text-left transition-all group cursor-pointer"
+                          >
+                            <div className="aspect-[9/16] max-h-28 bg-black rounded-lg overflow-hidden mb-2 relative flex items-center justify-center">
+                              {c.thumbnail_path ? (
+                                <img src={c.thumbnail_path} alt={c.title} className="w-full h-full object-cover" />
+                              ) : (
+                                <FileVideo className="h-6 w-6 text-zinc-600" />
+                              )}
+                              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                <Scissors className="h-4 w-4 text-white" />
+                              </div>
+                            </div>
+                            <h5 className="text-[11px] font-medium text-zinc-200 truncate">{c.title}</h5>
+                            <span className="text-[10px] text-purple-400 font-mono">Edit Short &rarr;</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

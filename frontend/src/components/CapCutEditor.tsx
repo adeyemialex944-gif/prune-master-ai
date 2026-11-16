@@ -6,7 +6,7 @@ import {
   Sliders, Share2, Layers, Flame, Trash2, Plus, Move, ZoomIn, ZoomOut,
   AlignLeft, AlignCenter, AlignRight, Edit2, Undo, Palette, Music, Mic,
   MicOff, ShieldCheck, Crown, Zap, Radio, Smile, Info, ChevronRight,
-  Smartphone, Volume1, Keyboard, X
+  Smartphone, Volume1, Keyboard, X, Upload, FileVideo
 } from 'lucide-react'
 import {
   YouTubeIcon, TikTokIcon, InstagramIcon, FacebookIcon, XTwitterIcon,
@@ -33,6 +33,9 @@ export interface ClipItem {
   transition?: string
   bg_music?: string
   bg_music_volume?: number
+  localBlobUrl?: string
+  rawBlob?: Blob
+  isDeviceStored?: boolean
 }
 
 interface TranscriptWord {
@@ -126,6 +129,11 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
   const [playbackRate, setPlaybackRate] = useState<number>(1)
   const [isLooping, setIsLooping] = useState<boolean>(true)
   const [videoCacheBuster, setVideoCacheBuster] = useState<number>(Date.now())
+  // External Video & Active Video Source
+  const [activeVideoSrc, setActiveVideoSrc] = useState<string>(clip.localBlobUrl || clip.file_path || '')
+  const externalFileInputRef = useRef<HTMLInputElement | null>(null)
+  // Razor / Scissor Cut Points on Timeline
+  const [splitPoints, setSplitPoints] = useState<number[]>([])
 
   // Editor configuration state
   const [trimStart, setTrimStart] = useState<number>(clip.start_time)
@@ -276,7 +284,75 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
 
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
-      setDuration(videoRef.current.duration)
+      const dur = videoRef.current.duration || 60
+      setDuration(dur)
+      if (clip.video_id === 0 || !clip.end_time || clip.end_time > dur) {
+        setTrimEnd(dur)
+      }
+    }
+  }
+
+  const handleSplitAtPlayhead = () => {
+    playSoundEffect('pop')
+    const currentT = currentTime
+    if (!splitPoints.includes(currentT)) {
+      setSplitPoints(prev => [...prev, currentT].sort((a, b) => a - b))
+      showToast(`✂️ Split clip at ${formatTimecode(currentT)}`)
+    }
+  }
+
+  const handleCutStartToPlayhead = () => {
+    playSoundEffect('pop')
+    const currentT = currentTime
+    setTrimStart(currentT)
+    showToast(`✂️ Cut away start up to ${formatTimecode(currentT)}`)
+  }
+
+  const handleCutEndToPlayhead = () => {
+    playSoundEffect('pop')
+    const currentT = currentTime
+    setTrimEnd(currentT)
+    showToast(`✂️ Cut away end after ${formatTimecode(currentT)}`)
+  }
+
+  const handleResetCuts = () => {
+    setTrimStart(0)
+    setTrimEnd(duration)
+    setSplitPoints([])
+    showToast('🔄 Reset timeline back to full video')
+  }
+
+  const handleAddCaptionAtPlayhead = () => {
+    const id = `caption_${Date.now()}`
+    const newOverlay: CustomTextOverlay = {
+      id,
+      text: 'New Caption Headline',
+      start_time: currentTime,
+      end_time: Math.min(currentTime + 3.0, duration),
+      position_y: 45,
+      position_x: 'center',
+      font_size: 32,
+      color: 'yellow',
+      burn: true
+    }
+    setCustomOverlays(prev => [...prev, newOverlay])
+    setSelectedOverlayId(id)
+    setEditorTab('overlays')
+    showToast(`💬 Added caption at ${formatTimecode(currentTime)}`)
+  }
+
+  const handleImportExternalVideoFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      const objectUrl = URL.createObjectURL(file)
+      setActiveVideoSrc(objectUrl)
+      setClipTitle(file.name.replace(/\.[^/.]+$/, ''))
+      setSplitPoints([])
+      showToast(`🎬 Imported "${file.name}"`)
+      if (videoRef.current) {
+        videoRef.current.src = objectUrl
+        videoRef.current.load()
+      }
     }
   }
 
@@ -898,6 +974,24 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
             </button>
           </div>
 
+          {/* Import External Video Button */}
+          <input
+            type="file"
+            ref={externalFileInputRef}
+            onChange={handleImportExternalVideoFile}
+            accept="video/mp4,video/quicktime,video/webm,video/*"
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => externalFileInputRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white transition-all text-xs font-semibold cursor-pointer shrink-0 shadow-md transform hover:scale-[1.02]"
+            title="Import an external video file from your computer or phone"
+          >
+            <Upload className="h-4 w-4" />
+            <span className="hidden sm:inline">Import Video</span>
+          </button>
+
           {/* Keyboard Shortcuts Trigger Button */}
           <button
             type="button"
@@ -1000,10 +1094,10 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                   : 'w-full max-w-[740px] aspect-[16/9]'
               }`}
             >
-              {clip.file_path ? (
+              {activeVideoSrc || clip.file_path ? (
                 <video
                   ref={videoRef}
-                  src={`${clip.file_path}?t=${videoCacheBuster}`}
+                  src={activeVideoSrc || (clip.file_path ? `${clip.file_path}?t=${videoCacheBuster}` : '')}
                   onTimeUpdate={handleTimeUpdate}
                   onLoadedMetadata={handleLoadedMetadata}
                   onClick={togglePlay}
@@ -1013,12 +1107,12 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
               ) : (
                 <div className="flex flex-col items-center justify-center p-6 text-center text-zinc-500 space-y-2">
                   <Video className="h-10 w-10 text-purple-500/50 animate-pulse" />
-                  <p className="text-xs">Clip is pending render. Click Re-Render above to generate video.</p>
+                  <p className="text-xs">No video loaded. Click "Import Video" above to load any MP4/MOV file.</p>
                 </div>
               )}
 
               {/* Overlay Play/Pause Big Center Indicator when paused */}
-              {!isPlaying && clip.file_path && (
+              {!isPlaying && (activeVideoSrc || clip.file_path) && (
                 <button
                   onClick={togglePlay}
                   className="absolute inset-0 m-auto h-14 w-14 rounded-full bg-black/60 hover:bg-black/80 border border-white/20 backdrop-blur-md flex items-center justify-center text-white transition-all transform hover:scale-110 shadow-2xl cursor-pointer"
@@ -1279,52 +1373,240 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
             </div>
           </div>
 
-          {/* Interactive Timeline Scrubber & Trim Sliders */}
-          <div className="p-3 sm:p-4 bg-[#0d0e17] border-t border-[#1e202e] space-y-2 shrink-0">
-            {/* Timeline Progress Bar */}
-            <div
-              className="relative h-6 bg-[#161726] rounded-lg cursor-pointer border border-[#27293d] overflow-hidden group"
-              onClick={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect()
-                const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-                seekTo(ratio * duration)
-              }}
-            >
-              {/* Playhead Progress Fill */}
-              <div
-                className="absolute top-0 bottom-0 left-0 bg-gradient-to-r from-purple-600/40 to-indigo-600/40 pointer-events-none"
-                style={{ width: `${(currentTime / (duration || 1)) * 100}%` }}
-              />
+          {/* Interactive Multi-Track Timeline & Working Space */}
+          <div className="p-3 sm:p-4 bg-[#0d0e17] border-t border-[#1e202e] space-y-3 shrink-0">
+            {/* TIMELINE ACTION BAR: RAZOR / SCISSOR TOOLS */}
+            <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {/* Play / Pause */}
+                <button
+                  type="button"
+                  onClick={togglePlay}
+                  className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white font-medium flex items-center gap-1 cursor-pointer transition-colors shadow-sm"
+                  title="Play / Pause (Space)"
+                >
+                  {isPlaying ? <Pause className="h-3.5 w-3.5 text-purple-400" /> : <Play className="h-3.5 w-3.5 text-purple-400" />}
+                  <span>{isPlaying ? 'Pause' : 'Play'}</span>
+                </button>
 
-              {/* Trim Window Bracket Highlight */}
-              {duration > 0 && (
-                <div
-                  className="absolute top-0 bottom-0 border-y-2 border-purple-400 bg-purple-500/15 pointer-events-none"
-                  style={{
-                    left: `${(Math.max(0, trimStart - clip.start_time) / duration) * 100}%`,
-                    width: `${(currentTrimDuration / duration) * 100}%`
-                  }}
-                />
-              )}
+                {/* ✂️ Split at Playhead */}
+                <button
+                  type="button"
+                  onClick={handleSplitAtPlayhead}
+                  className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold flex items-center gap-1.5 shadow cursor-pointer transition-transform transform active:scale-95"
+                  title="Split video at current moving playhead line (Press S or C)"
+                >
+                  <Scissors className="h-3.5 w-3.5 text-amber-300" />
+                  <span>Split at Playhead</span>
+                </button>
 
-              {/* Scrubber Playhead Needle */}
-              <div
-                className="absolute top-0 bottom-0 w-1 bg-yellow-400 shadow-md transform -translate-x-1/2 pointer-events-none z-10"
-                style={{ left: `${(currentTime / (duration || 1)) * 100}%` }}
-              >
-                <div className="w-2.5 h-2.5 bg-yellow-400 rounded-full -ml-[3px] -mt-0.5 shadow" />
+                {/* [ Cut Start */}
+                <button
+                  type="button"
+                  onClick={handleCutStartToPlayhead}
+                  className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                  title="Cut away everything before playhead (Press [ or I)"
+                >
+                  <span>[ Cut Start</span>
+                </button>
+
+                {/* ] Cut End */}
+                <button
+                  type="button"
+                  onClick={handleCutEndToPlayhead}
+                  className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                  title="Cut away everything after playhead (Press ] or O)"
+                >
+                  <span>Cut End ]</span>
+                </button>
+
+                {/* Reset Cuts */}
+                {(trimStart > 0 || trimEnd < duration || splitPoints.length > 0) && (
+                  <button
+                    type="button"
+                    onClick={handleResetCuts}
+                    className="px-2 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 text-[11px] flex items-center gap-1 cursor-pointer transition-colors"
+                    title="Reset all cuts"
+                  >
+                    <Undo className="h-3 w-3" />
+                    <span>Reset</span>
+                  </button>
+                )}
               </div>
 
-              {/* Timecode Text Inside Timeline */}
-              <div className="absolute inset-0 flex items-center justify-between px-3 text-[10px] font-mono text-zinc-400 select-none pointer-events-none">
-                <span>00:00.0</span>
-                <span className="text-yellow-300 font-bold">{formatTimecode(currentTime)}</span>
-                <span>{formatTimecode(duration)}</span>
+              <div className="flex items-center gap-2">
+                {/* ➕ Add Caption at Playhead */}
+                <button
+                  type="button"
+                  onClick={handleAddCaptionAtPlayhead}
+                  className="px-2.5 py-1.5 rounded-lg bg-indigo-950/70 hover:bg-indigo-900/80 border border-indigo-700/50 text-indigo-300 font-medium flex items-center gap-1 cursor-pointer text-[11px] transition-colors"
+                  title="Add custom caption starting at current playhead"
+                >
+                  <Type className="h-3 w-3 text-indigo-400" />
+                  <span>+ Caption</span>
+                </button>
+
+                {/* Timecode */}
+                <div className="px-2.5 py-1 rounded-lg bg-[#161726] border border-[#27293d] font-mono text-[11px] text-zinc-300 select-none">
+                  <span className="text-yellow-400 font-bold">{formatTimecode(currentTime)}</span>
+                  <span className="text-zinc-500"> / {formatTimecode(duration)}</span>
+                </div>
               </div>
             </div>
 
-            {/* Dual Range Trim Inputs */}
-            <div className="grid grid-cols-2 gap-3 text-xs">
+            {/* MULTI-TRACK WORKING SPACE */}
+            <div className="rounded-xl border border-[#24263a] bg-[#11121d] overflow-hidden select-none">
+              {/* Timeline Header Ruler */}
+              <div
+                className="relative h-6 bg-[#171827] border-b border-[#24263a] cursor-pointer text-[10px] font-mono text-zinc-500 select-none"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+                  seekTo(ratio * duration)
+                }}
+              >
+                <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
+                  <span>00:00.0</span>
+                  <span>{formatTimecode(duration * 0.25)}</span>
+                  <span>{formatTimecode(duration * 0.5)}</span>
+                  <span>{formatTimecode(duration * 0.75)}</span>
+                  <span>{formatTimecode(duration)}</span>
+                </div>
+                {/* Moving Playhead Needle on Ruler */}
+                <div
+                  className="absolute top-0 bottom-0 w-0.5 bg-yellow-400 pointer-events-none z-30"
+                  style={{ left: `${(currentTime / (duration || 1)) * 100}%` }}
+                >
+                  <div className="w-3.5 h-3.5 bg-yellow-400 rotate-45 -ml-[6px] -mt-1 shadow-md rounded-[1px]" />
+                </div>
+              </div>
+
+              {/* TRACK 1: VIDEO TRACK */}
+              <div
+                className="relative h-12 border-b border-[#1f2133] bg-[#0c0d16] flex items-center px-1 cursor-pointer group"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+                  seekTo(ratio * duration)
+                }}
+              >
+                {/* Track Label */}
+                <div className="absolute left-1.5 top-1.5 text-[9px] font-bold text-zinc-300 uppercase tracking-wider z-20 pointer-events-none flex items-center gap-1 bg-black/70 px-1.5 py-0.5 rounded border border-zinc-800">
+                  <Video className="h-2.5 w-2.5 text-purple-400" />
+                  <span>Video Track</span>
+                </div>
+
+                {/* Active Video Clip Region */}
+                {duration > 0 && (
+                  <div
+                    className="absolute top-1 bottom-1 rounded-md bg-gradient-to-r from-purple-800/70 via-indigo-700/70 to-purple-800/70 border border-purple-400 shadow flex items-center justify-between px-2.5 pointer-events-none transition-all"
+                    style={{
+                      left: `${(Math.max(0, trimStart) / (duration || 1)) * 100}%`,
+                      width: `${(Math.max(0.1, trimEnd - trimStart) / (duration || 1)) * 100}%`
+                    }}
+                  >
+                    <span className="text-[10px] text-white font-semibold truncate select-none pl-20">
+                      🎬 {clipTitle}
+                    </span>
+                    <span className="text-[9px] font-mono text-purple-200 bg-purple-950/80 px-1.5 py-0.5 rounded border border-purple-700/60">
+                      {(Math.max(0, trimEnd - trimStart)).toFixed(1)}s
+                    </span>
+                  </div>
+                )}
+
+                {/* Split Cut Markers */}
+                {splitPoints.map((pt, idx) => (
+                  <div
+                    key={idx}
+                    className="absolute top-0 bottom-0 w-0.5 border-r-2 border-dashed border-amber-300 pointer-events-none z-20 flex flex-col items-center justify-start"
+                    style={{ left: `${(pt / (duration || 1)) * 100}%` }}
+                  >
+                    <span className="text-[10px] -mt-1 bg-black/80 px-0.5 rounded">✂️</span>
+                  </div>
+                ))}
+
+                {/* Moving Playhead Needle on Track 1 */}
+                <div
+                  className="absolute top-0 bottom-0 w-0.5 bg-yellow-400 shadow pointer-events-none z-30"
+                  style={{ left: `${(currentTime / (duration || 1)) * 100}%` }}
+                />
+              </div>
+
+              {/* TRACK 2: CAPTIONS & TEXT OVERLAYS TRACK */}
+              <div
+                className="relative h-9 border-b border-[#1f2133] bg-[#090a12] flex items-center px-1 cursor-pointer"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+                  seekTo(ratio * duration)
+                }}
+              >
+                <div className="absolute left-1.5 top-1.5 text-[9px] font-bold text-zinc-300 uppercase tracking-wider z-20 pointer-events-none flex items-center gap-1 bg-black/70 px-1.5 py-0.5 rounded border border-zinc-800">
+                  <Type className="h-2.5 w-2.5 text-cyan-400" />
+                  <span>Captions</span>
+                </div>
+
+                {/* Custom Text Overlay Blocks */}
+                {customOverlays.map((ov) => {
+                  const leftPct = (ov.start_time / (duration || 1)) * 100
+                  const widthPct = Math.max(3, ((ov.end_time - ov.start_time) / (duration || 1)) * 100)
+                  return (
+                    <div
+                      key={ov.id}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        seekTo(ov.start_time)
+                        setSelectedOverlayId(ov.id)
+                        setEditorTab('overlays')
+                      }}
+                      className="absolute top-1 bottom-1 rounded bg-amber-500/30 border border-amber-400/80 hover:bg-amber-500/50 flex items-center px-2 text-[9px] text-amber-200 truncate cursor-pointer z-10 transition-all shadow-sm"
+                      style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                      title={`Text: "${ov.text}"`}
+                    >
+                      <span className="truncate">💬 {ov.text}</span>
+                    </div>
+                  )
+                })}
+
+                {/* Moving Playhead Needle on Track 2 */}
+                <div
+                  className="absolute top-0 bottom-0 w-0.5 bg-yellow-400 shadow pointer-events-none z-30"
+                  style={{ left: `${(currentTime / (duration || 1)) * 100}%` }}
+                />
+              </div>
+
+              {/* TRACK 3: AUDIO & MUSIC TRACK */}
+              <div
+                className="relative h-8 bg-[#07080f] flex items-center px-1 cursor-pointer"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+                  seekTo(ratio * duration)
+                }}
+              >
+                <div className="absolute left-1.5 top-1 text-[9px] font-bold text-zinc-300 uppercase tracking-wider z-20 pointer-events-none flex items-center gap-1 bg-black/70 px-1.5 py-0.5 rounded border border-zinc-800">
+                  <Music className="h-2.5 w-2.5 text-pink-400" />
+                  <span>Audio Track ({bgMusic !== 'none' ? bgMusic : 'Original Voice'})</span>
+                </div>
+
+                {/* Audio Progress Bar */}
+                <div className="w-full h-2 rounded bg-pink-950/40 border border-pink-800/30 mx-3 flex items-center px-0.5 overflow-hidden">
+                  <div
+                    className="h-1 bg-gradient-to-r from-pink-500 to-purple-500 rounded"
+                    style={{ width: `${(currentTime / (duration || 1)) * 100}%` }}
+                  />
+                </div>
+
+                {/* Moving Playhead Needle on Track 3 */}
+                <div
+                  className="absolute top-0 bottom-0 w-0.5 bg-yellow-400 shadow pointer-events-none z-30"
+                  style={{ left: `${(currentTime / (duration || 1)) * 100}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Precision Slider Handles */}
+            <div className="grid grid-cols-2 gap-3 text-xs pt-1">
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-[11px] text-zinc-400">
                   <span>Trim In:</span>
@@ -1332,14 +1614,14 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                 </div>
                 <input
                   type="range"
-                  min={clip.start_time}
-                  max={trimEnd - 0.5}
+                  min={0}
+                  max={Math.max(0, trimEnd - 0.5)}
                   step={0.1}
                   value={trimStart}
                   onChange={(e) => {
                     const val = parseFloat(e.target.value)
                     setTrimStart(val)
-                    seekTo(val - clip.start_time)
+                    seekTo(val)
                   }}
                   className="w-full accent-purple-500 cursor-pointer h-1.5"
                 />
@@ -1352,14 +1634,14 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                 </div>
                 <input
                   type="range"
-                  min={trimStart + 0.5}
-                  max={clip.end_time}
+                  min={Math.min(duration, trimStart + 0.5)}
+                  max={duration || 60}
                   step={0.1}
                   value={trimEnd}
                   onChange={(e) => {
                     const val = parseFloat(e.target.value)
                     setTrimEnd(val)
-                    seekTo(val - clip.start_time)
+                    seekTo(val)
                   }}
                   className="w-full accent-purple-500 cursor-pointer h-1.5"
                 />
