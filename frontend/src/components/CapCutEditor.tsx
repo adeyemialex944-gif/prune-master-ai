@@ -6,7 +6,7 @@ import {
   Sliders, Share2, Layers, Flame, Trash2, Plus, Move, ZoomIn, ZoomOut,
   AlignLeft, AlignCenter, AlignRight, Edit2, Undo, Palette, Music, Mic,
   MicOff, ShieldCheck, Crown, Zap, Radio, Smile, Info, ChevronRight,
-  Smartphone, Volume1, Keyboard, X, Upload, FileVideo
+  Smartphone, Volume1, Keyboard, X, Upload, FileVideo, Bell
 } from 'lucide-react'
 import {
   YouTubeIcon, TikTokIcon, InstagramIcon, FacebookIcon, XTwitterIcon,
@@ -84,6 +84,8 @@ export interface CustomTextOverlay {
   color: 'yellow' | 'white' | 'red' | 'cyan' | 'purple' | 'green'
   burn: boolean
   erased?: boolean
+  animation?: 'none' | 'bounce' | 'slide_up' | 'pulse' | 'glow' | 'wiggle' | 'marquee'
+  is_outro?: boolean
 }
 
 interface CapCutEditorProps {
@@ -576,6 +578,38 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
 
   const handleAddSticker = (stickerEmoji: string) => {
     handleAddCustomOverlay(stickerEmoji, 50, 56)
+  }
+
+  const handleAddOutroOverlay = (
+    presetText: string = '👉 Please Like & Subscribe! 🔔',
+    animationType: 'bounce' | 'slide_up' | 'pulse' | 'glow' | 'wiggle' | 'marquee' = 'slide_up'
+  ) => {
+    const newId = `outro_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`
+    const outroDuration = 4.5
+    const videoLen = duration > 0 ? duration : 60
+    const startTime = Math.max(0, videoLen - outroDuration)
+    const newOverlay: CustomTextOverlay = {
+      id: newId,
+      text: presetText,
+      start_time: Math.round(startTime * 10) / 10,
+      end_time: Math.round(videoLen * 10) / 10,
+      position_y: 80,
+      position_x: 'center',
+      font_size: 44,
+      color: 'yellow',
+      burn: true,
+      erased: false,
+      animation: animationType,
+      is_outro: true
+    }
+    setCustomOverlays(prev => [...prev, newOverlay])
+    setSelectedOverlayId(newId)
+    setEditorTab('overlays')
+    if (videoRef.current) {
+      videoRef.current.currentTime = startTime
+      setCurrentTime(startTime)
+    }
+    showToast(`🎬 Added Moving Outro (${animationType}) at ${formatTimecode(startTime)}`)
   }
 
   const handleUpdateOverlay = (id: string, updates: Partial<CustomTextOverlay>) => {
@@ -1220,6 +1254,15 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                 }
                 const colorCode = colorMap[o.color] || '#facc15'
                 const leftPos = o.position_x === 'left' ? '18%' : o.position_x === 'right' ? '82%' : '50%'
+                const animClass = o.animation && o.animation !== 'none'
+                  ? o.animation === 'bounce' ? 'anim-outro-bounce'
+                  : o.animation === 'slide_up' ? 'anim-outro-slide-up'
+                  : o.animation === 'pulse' ? 'anim-outro-pulse'
+                  : o.animation === 'glow' ? 'anim-outro-glow'
+                  : o.animation === 'wiggle' ? 'anim-outro-wiggle'
+                  : o.animation === 'marquee' ? 'anim-outro-marquee'
+                  : ''
+                  : ''
 
                 return (
                   <div
@@ -1241,7 +1284,7 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                     title="Click to edit, move or resize"
                   >
                     <span
-                      className="font-black uppercase tracking-wider drop-shadow-[0_4px_12px_rgba(0,0,0,0.95)] block"
+                      className={`font-black uppercase tracking-wider drop-shadow-[0_4px_12px_rgba(0,0,0,0.95)] block ${animClass}`}
                       style={{
                         fontSize: `${Math.round(o.font_size * 0.45)}px`,
                         color: colorCode,
@@ -1251,8 +1294,8 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                       {o.text}
                     </span>
                     {isSelected && (
-                      <span className="text-[9px] bg-purple-600 text-white px-1.5 py-0.2 rounded font-sans font-bold shadow">
-                        Active ({o.position_y}% Y)
+                      <span className="text-[9px] bg-purple-600 text-white px-1.5 py-0.5 rounded font-sans font-bold shadow inline-block mt-0.5">
+                        Active ({o.position_y}% Y{o.animation && o.animation !== 'none' ? ` • ${o.animation}` : ''})
                       </span>
                     )}
                   </div>
@@ -1435,6 +1478,17 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
               </div>
 
               <div className="flex items-center gap-2">
+                {/* 🔔 + Outro Movement */}
+                <button
+                  type="button"
+                  onClick={() => handleAddOutroOverlay('👉 Please Like & Subscribe! 🔔', 'slide_up')}
+                  className="px-2.5 py-1.5 rounded-lg bg-purple-950/80 hover:bg-purple-900 border border-purple-600/60 text-purple-200 font-bold flex items-center gap-1 cursor-pointer text-[11px] transition-all shadow-sm"
+                  title="Add animated Outro at end of video"
+                >
+                  <Bell className="h-3 w-3 text-yellow-300 animate-bounce" />
+                  <span>+ Outro</span>
+                </button>
+
                 {/* ➕ Add Caption at Playhead */}
                 <button
                   type="button"
@@ -1550,6 +1604,7 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                 {customOverlays.map((ov) => {
                   const leftPct = (ov.start_time / (duration || 1)) * 100
                   const widthPct = Math.max(3, ((ov.end_time - ov.start_time) / (duration || 1)) * 100)
+                  const isOutro = ov.is_outro || (ov.animation && ov.animation !== 'none')
                   return (
                     <div
                       key={ov.id}
@@ -1559,11 +1614,15 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                         setSelectedOverlayId(ov.id)
                         setEditorTab('overlays')
                       }}
-                      className="absolute top-1 bottom-1 rounded bg-amber-500/30 border border-amber-400/80 hover:bg-amber-500/50 flex items-center px-2 text-[9px] text-amber-200 truncate cursor-pointer z-10 transition-all shadow-sm"
+                      className={`absolute top-1 bottom-1 rounded border flex items-center px-2 text-[9px] truncate cursor-pointer z-10 transition-all shadow-sm ${
+                        isOutro
+                          ? 'bg-purple-600/40 border-purple-400 text-purple-200 hover:bg-purple-600/60'
+                          : 'bg-amber-500/30 border-amber-400/80 text-amber-200 hover:bg-amber-500/50'
+                      }`}
                       style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                      title={`Text: "${ov.text}"`}
+                      title={`${isOutro ? '🎬 Animated Outro' : 'Text'}: "${ov.text}"`}
                     >
-                      <span className="truncate">💬 {ov.text}</span>
+                      <span className="truncate">{isOutro ? '🔔' : '💬'} {ov.text}</span>
                     </div>
                   )
                 })}
@@ -2004,13 +2063,61 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                     <p className="text-[11px] text-zinc-400">Burn custom hooks, callouts & reaction stickers into MP4.</p>
                   </div>
 
-                  <button
-                    onClick={() => handleAddCustomOverlay('VIRAL HOOK 🔥', 25)}
-                    className="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold flex items-center gap-1 shadow-md transition-all cursor-pointer"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    <span>Add Text</span>
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => handleAddOutroOverlay('👉 Please Like & Subscribe! 🔔', 'slide_up')}
+                      className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold flex items-center gap-1 shadow-md transition-all cursor-pointer"
+                      title="Add moving outro at the end of video"
+                    >
+                      <Bell className="h-3.5 w-3.5 text-yellow-300" />
+                      <span>+ Outro</span>
+                    </button>
+                    <button
+                      onClick={() => handleAddCustomOverlay('VIRAL HOOK 🔥', 25)}
+                      className="px-2 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium flex items-center gap-1 border border-zinc-700 transition-all cursor-pointer"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>Text</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 🎬 Animated Outro Movement & Presets */}
+                <div className="p-3 rounded-xl bg-gradient-to-br from-[#1a172c] to-[#121324] border border-purple-900/50 space-y-2 shadow-inner">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-purple-200 uppercase tracking-wider flex items-center gap-1.5">
+                      <Bell className="h-3.5 w-3.5 text-yellow-400" />
+                      <span>Animated Outros & CTAs</span>
+                    </span>
+                    <span className="text-[10px] text-purple-300 bg-purple-950/80 px-1.5 py-0.5 rounded font-mono border border-purple-800/60">
+                      Auto-Timed End
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-zinc-400">
+                    One-click add animated 'Like & Subscribe' outro to the end of your video:
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {[
+                      { txt: '👉 Please Like & Subscribe! 🔔', anim: 'slide_up' as const, label: 'Slide Up Sub' },
+                      { txt: 'Follow for More! 🔥', anim: 'bounce' as const, label: 'Bounce Follow' },
+                      { txt: 'Share & Comment 👇', anim: 'pulse' as const, label: 'Pulse Share' },
+                      { txt: 'Double Tap to Like ❤️', anim: 'wiggle' as const, label: 'Wiggle Like' },
+                      { txt: 'Save this Video 📌', anim: 'glow' as const, label: 'Neon Glow Save' },
+                      { txt: 'Turn On Bell 🔔', anim: 'marquee' as const, label: 'Marquee Bell' }
+                    ].map((p) => (
+                      <button
+                        key={p.label}
+                        type="button"
+                        onClick={() => handleAddOutroOverlay(p.txt, p.anim)}
+                        className="p-1.5 rounded-lg bg-[#0e0f1b] hover:bg-purple-900/50 border border-purple-800/40 hover:border-purple-400 text-left text-[11px] font-medium text-zinc-200 transition-all cursor-pointer flex items-center justify-between group"
+                      >
+                        <span className="truncate group-hover:text-yellow-300 transition-colors">{p.label}</span>
+                        <span className="text-[9px] text-purple-400 font-mono shrink-0 uppercase">{p.anim}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 {/* Viral Reaction Stickers Picker */}
@@ -2131,12 +2238,49 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                           placeholder="Type overlay text or emoji..."
                         />
 
-                        {/* Move Position (Y) Slider */}
+                        {/* Animation / Movement Picker */}
+                        <div className="space-y-1 p-2 rounded-lg bg-[#0b0c14] border border-[#1e202f]">
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="font-semibold text-zinc-300 flex items-center gap-1">
+                              <Sparkles className="h-3 w-3 text-yellow-400" />
+                              <span>Text Movement / Animation</span>
+                            </span>
+                            <span className="font-mono text-purple-300 uppercase font-bold text-[9px]">
+                              {overlay.animation || 'none'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-4 gap-1 pt-0.5">
+                            {[
+                              { id: 'none', label: 'Static' },
+                              { id: 'slide_up', label: 'Slide Up' },
+                              { id: 'bounce', label: 'Bounce' },
+                              { id: 'pulse', label: 'Pulse' },
+                              { id: 'glow', label: 'Glow' },
+                              { id: 'wiggle', label: 'Wiggle' },
+                              { id: 'marquee', label: 'Marquee' }
+                            ].map((a) => (
+                              <button
+                                key={a.id}
+                                type="button"
+                                onClick={() => handleUpdateOverlay(overlay.id, { animation: a.id as any })}
+                                className={`px-1.5 py-1 rounded text-[10px] font-medium transition-all cursor-pointer truncate text-center ${
+                                  (overlay.animation || 'none') === a.id
+                                    ? 'bg-purple-600 text-white font-bold ring-1 ring-purple-400'
+                                    : 'bg-[#141525] text-zinc-400 hover:text-zinc-200 hover:bg-[#1e2036]'
+                                }`}
+                              >
+                                {a.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Move Position (Y) Slider & Quick Jump Buttons */}
                         <div className="space-y-1 p-2 rounded-lg bg-[#0b0c14] border border-[#1e202f]">
                           <div className="flex items-center justify-between text-[10px]">
                             <span className="font-semibold text-zinc-300 flex items-center gap-1">
                               <Move className="h-3 w-3 text-purple-400" />
-                              <span>Move Vertical Position</span>
+                              <span>Move Vertical Position (Y)</span>
                             </span>
                             <span className="font-mono text-purple-300 font-bold">{overlay.position_y}%</span>
                           </div>
@@ -2149,6 +2293,106 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                             onChange={(e) => handleUpdateOverlay(overlay.id, { position_y: parseInt(e.target.value) })}
                             className="w-full accent-purple-500 cursor-pointer h-1.5"
                           />
+                          <div className="flex items-center justify-between gap-1 pt-1 text-[10px]">
+                            {[
+                              { label: 'Top (15%)', y: 15 },
+                              { label: 'Center (50%)', y: 50 },
+                              { label: 'Lower 3rd (70%)', y: 70 },
+                              { label: 'Outro (80%)', y: 80 }
+                            ].map((pos) => (
+                              <button
+                                key={pos.label}
+                                type="button"
+                                onClick={() => handleUpdateOverlay(overlay.id, { position_y: pos.y })}
+                                className={`px-1.5 py-0.5 rounded text-[9px] cursor-pointer transition-colors ${
+                                  overlay.position_y === pos.y
+                                    ? 'bg-purple-900 text-purple-200 border border-purple-600 font-bold'
+                                    : 'bg-[#151624] text-zinc-400 hover:text-white'
+                                }`}
+                              >
+                                {pos.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Horizontal Alignment */}
+                        <div className="p-2 rounded-lg bg-[#0b0c14] border border-[#1e202f] flex items-center justify-between text-[10px]">
+                          <span className="text-zinc-300 font-semibold">Align X:</span>
+                          <div className="flex items-center gap-1">
+                            {[
+                              { id: 'left', label: 'Left' },
+                              { id: 'center', label: 'Center' },
+                              { id: 'right', label: 'Right' }
+                            ].map((align) => (
+                              <button
+                                key={align.id}
+                                type="button"
+                                onClick={() => handleUpdateOverlay(overlay.id, { position_x: align.id as any })}
+                                className={`px-2 py-0.5 rounded text-[10px] cursor-pointer transition-colors ${
+                                  (overlay.position_x || 'center') === align.id
+                                    ? 'bg-purple-600 text-white font-bold'
+                                    : 'bg-[#151624] text-zinc-400 hover:text-white'
+                                }`}
+                              >
+                                {align.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Timing & Outro Duration Sync */}
+                        <div className="p-2 rounded-lg bg-[#0b0c14] border border-[#1e202f] space-y-1.5 text-[10px]">
+                          <div className="flex items-center justify-between">
+                            <span className="text-zinc-300 font-semibold flex items-center gap-1">
+                              <Clock className="h-3 w-3 text-cyan-400" />
+                              <span>Timing & Outro Duration</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const outroDur = 4.5
+                                const start = Math.max(0, duration - outroDur)
+                                handleUpdateOverlay(overlay.id, {
+                                  start_time: Math.round(start * 10) / 10,
+                                  end_time: Math.round(duration * 10) / 10,
+                                  position_y: 80,
+                                  is_outro: true,
+                                  animation: overlay.animation || 'slide_up'
+                                })
+                                showToast('🎬 Set as Outro (last 4.5s)')
+                              }}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-purple-900/80 hover:bg-purple-800 text-purple-200 border border-purple-700 font-semibold cursor-pointer transition-colors"
+                            >
+                              🎬 Snap to Outro (End)
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 font-mono">
+                            <div>
+                              <span className="text-zinc-500 text-[9px]">Start (s):</span>
+                              <input
+                                type="number"
+                                step="0.5"
+                                min="0"
+                                max={duration}
+                                value={overlay.start_time}
+                                onChange={(e) => handleUpdateOverlay(overlay.id, { start_time: parseFloat(e.target.value) || 0 })}
+                                className="w-full bg-[#151625] border border-zinc-700 rounded px-1.5 py-0.5 text-white text-xs"
+                              />
+                            </div>
+                            <div>
+                              <span className="text-zinc-500 text-[9px]">End (s):</span>
+                              <input
+                                type="number"
+                                step="0.5"
+                                min="0"
+                                max={duration}
+                                value={overlay.end_time}
+                                onChange={(e) => handleUpdateOverlay(overlay.id, { end_time: parseFloat(e.target.value) || duration })}
+                                className="w-full bg-[#151625] border border-zinc-700 rounded px-1.5 py-0.5 text-white text-xs"
+                              />
+                            </div>
+                          </div>
                         </div>
 
                         {/* Size (Scale) Slider & Color Picker */}

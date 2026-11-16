@@ -348,8 +348,26 @@ def generate_ass_subtitle_file(
 
             start_str = format_ass_time(o_start)
             end_str = format_ass_time(o_end)
+            anim = str(o.get("animation", "none")).lower()
+
+            if anim == "slide_up":
+                slide_from_y = min(play_res_y, pos_y + int(play_res_y * 0.08))
+                style_tag = f"{{\\move({pos_x},{slide_from_y},{pos_x},{pos_y},0,450)\\an{an}\\fs{fs}\\bord7\\shad3\\c{col_hex}}}"
+            elif anim == "bounce":
+                style_tag = f"{{\\an{an}\\pos({pos_x},{pos_y})\\fs{fs}\\fad(150,150)\\t(0,250,\\fscx115\\fscy115)\\t(250,500,\\fscx100\\fscy100)\\bord7\\shad3\\c{col_hex}}}"
+            elif anim == "pulse":
+                style_tag = f"{{\\an{an}\\pos({pos_x},{pos_y})\\fs{fs}\\fad(200,200)\\t(0,350,\\fscx118\\fscy118)\\t(350,700,\\fscx100\\fscy100)\\bord7\\shad3\\c{col_hex}}}"
+            elif anim == "wiggle":
+                style_tag = f"{{\\an{an}\\pos({pos_x},{pos_y})\\fs{fs}\\fad(150,150)\\t(0,150,\\frz4)\\t(150,300,\\frz-4)\\t(300,450,\\frz2)\\t(450,600,\\frz0)\\bord7\\shad3\\c{col_hex}}}"
+            elif anim == "glow":
+                style_tag = f"{{\\an{an}\\pos({pos_x},{pos_y})\\fs{fs}\\fad(250,250)\\bord10\\shad5\\c{col_hex}}}"
+            elif anim == "marquee":
+                style_tag = f"{{\\move({play_res_x + 100},{pos_y},{-100},{pos_y})\\an{an}\\fs{fs}\\bord7\\shad3\\c{col_hex}}}"
+            else:
+                style_tag = f"{{\\an{an}\\pos({pos_x},{pos_y})\\fs{fs}\\bord7\\shad3\\c{col_hex}}}"
+
             dialogue_lines.append(
-                f"Dialogue: 1,{start_str},{end_str},Default,,0,0,0,,{{\\an{an}\\pos({pos_x},{pos_y})\\fs{fs}\\bord7\\shad3\\c{col_hex}}}{o_text}"
+                f"Dialogue: 1,{start_str},{end_str},Default,,0,0,0,,{style_tag}{o_text}"
             )
 
     # 4. Burn Custom or Platform Watermark if requested

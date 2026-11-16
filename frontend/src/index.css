@@ -7,3 +7,60 @@
     @apply bg-[#0b0b0e] text-[#ededef] font-sans antialiased selection:bg-purple-600 selection:text-white;
   }
 }
+
+/* Outro Text Movement Keyframe Animations */
+@keyframes outroBounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-12px); }
+}
+
+@keyframes outroSlideUp {
+  0% { transform: translateY(50px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes outroPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}
+
+@keyframes outroGlow {
+  0%, 100% { filter: drop-shadow(0 0 6px rgba(250, 204, 21, 0.8)); }
+  50% { filter: drop-shadow(0 0 18px rgba(250, 204, 21, 1)) drop-shadow(0 0 30px rgba(239, 68, 68, 0.8)); }
+}
+
+@keyframes outroWiggle {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-5deg) scale(1.04); }
+  75% { transform: rotate(5deg) scale(1.04); }
+}
+
+@keyframes outroMarquee {
+  0% { transform: translateX(50%); }
+  100% { transform: translateX(-50%); }
+}
+
+.anim-outro-bounce {
+  animation: outroBounce 1.2s ease-in-out infinite;
+}
+
+.anim-outro-slide-up {
+  animation: outroSlideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.anim-outro-pulse {
+  animation: outroPulse 1s ease-in-out infinite;
+}
+
+.anim-outro-glow {
+  animation: outroGlow 1.4s ease-in-out infinite;
+}
+
+.anim-outro-wiggle {
+  animation: outroWiggle 0.8s ease-in-out infinite;
+}
+
+.anim-outro-marquee {
+  animation: outroMarquee 4s linear infinite;
+  white-space: nowrap;
+}
