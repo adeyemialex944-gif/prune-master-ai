@@ -3,7 +3,7 @@ import {
   Play, Pause, RotateCcw, Volume2, VolumeX, Maximize,
   Scissors, Sparkles, Type, Video, Download, Check, Copy,
   Clock, ArrowLeft, RefreshCw, Eye, EyeOff, CheckCircle2, AlertCircle,
-  Sliders, Share2, Layers, Flame, Trash2, Plus, Move, ZoomIn, ZoomOut,
+  Sliders, Share2, Layers, Flame, Trash2, Plus, Minus, Move, ZoomIn, ZoomOut,
   AlignLeft, AlignCenter, AlignRight, Edit2, Undo, Palette, Music, Mic,
   MicOff, ShieldCheck, Crown, Zap, Radio, Smile, Info, ChevronRight,
   Smartphone, Volume1, Keyboard, X, Upload, FileVideo, Bell
@@ -160,6 +160,8 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
   const [textPositionY, setTextPositionY] = useState<number>(42) // 42% from top (center-chest for vertical reels)
   const [fontSizeScale, setFontSizeScale] = useState<number>(1.0)
   const [showOverlayPreview, setShowOverlayPreview] = useState<boolean>(true)
+  const [isEditingActiveCaptionOnVideo, setIsEditingActiveCaptionOnVideo] = useState<boolean>(false)
+  const [captionHovered, setCaptionHovered] = useState<boolean>(false)
 
   // Transcript & Segment Editing state
   const [transcriptData, setTranscriptData] = useState<ClipTranscriptData | null>(null)
@@ -590,18 +592,30 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
     setEditingSegmentText(seg.text)
   }
 
-  const handleSaveSegmentEdit = (id: number) => {
+  const handleSaveSegmentEdit = (id: number, customText?: string) => {
+    const textToSave = (customText !== undefined ? customText : editingSegmentText).trim()
     setSegments(prev => prev.map(s => {
       if (s.id === id) {
-        return { ...s, text: editingSegmentText }
+        // Re-generate word timestamps evenly across the segment duration if words exist
+        const wordsList = textToSave.split(/\s+/).filter(Boolean)
+        const durPerWord = wordsList.length > 0 ? (s.end - s.start) / wordsList.length : 0
+        const updatedWords = wordsList.map((w, idx) => ({
+          word: w,
+          start: s.start + idx * durPerWord,
+          end: s.start + (idx + 1) * durPerWord,
+          score: 1.0
+        }))
+        return { ...s, text: textToSave, words: updatedWords }
       }
       return s
     }))
     setEditingSegmentId(null)
+    setIsEditingActiveCaptionOnVideo(false)
   }
 
   const handleCancelSegmentEdit = () => {
     setEditingSegmentId(null)
+    setIsEditingActiveCaptionOnVideo(false)
   }
 
   // Custom Text & Sticker Overlay Handlers
@@ -1669,9 +1683,11 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                   ? '#facc15'
                   : '#ffffff'
 
+                const isCurrentlyEditingThisSeg = isEditingActiveCaptionOnVideo && editingSegmentId === activeSeg.id
+
                 return (
                   <div
-                    className="absolute pointer-events-none text-center px-4 select-none z-30 flex items-center justify-center min-h-[64px]"
+                    className="absolute text-center px-4 z-30 flex items-center justify-center min-h-[64px] pointer-events-none"
                     style={{
                       top: `${textPositionY}%`,
                       left: '50%',
@@ -1679,35 +1695,250 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                       width: '92%'
                     }}
                   >
-                    {isWordPop && currentWordText ? (
-                      <span
-                        className="inline-block font-black tracking-wide uppercase drop-shadow-[0_4px_12px_rgba(0,0,0,0.9)]"
-                        style={{
-                          fontSize: `${Math.round(28 * fontSizeScale)}px`,
-                          color: textColor,
-                          textShadow: '0 0 12px rgba(0,0,0,0.95), 0 2px 4px #000, 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000',
-                          WebkitTextStroke: captionStyle === 'word_red' ? '1.5px #ffffff' : '1.5px #000000',
-                          lineHeight: '1.2'
-                        }}
+                    {isCurrentlyEditingThisSeg ? (
+                      /* INLINE ON-VIDEO TEXT & SIZE EDITOR */
+                      <div
+                        className="pointer-events-auto bg-[#0d0e1a]/95 border-2 border-purple-500 rounded-xl p-3 backdrop-blur-md shadow-2xl flex flex-col gap-2.5 w-full max-w-[420px] z-40 select-none animate-in fade-in zoom-in-95"
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        {currentWordText}
-                      </span>
+                        <div className="flex items-center justify-between text-[11px] text-purple-300 font-bold px-0.5">
+                          <span className="flex items-center gap-1.5">
+                            <Edit2 className="w-3.5 h-3.5 text-purple-400" />
+                            <span>Edit Caption on Video</span>
+                          </span>
+                          <div className="flex items-center gap-1">
+                            {/* In-Editor Font Sizing Steppers */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFontSizeScale(prev => Math.max(0.5, Math.round((prev - 0.1) * 10) / 10))
+                                playSoundEffect('pop')
+                              }}
+                              className="w-5 h-5 rounded bg-zinc-800 hover:bg-purple-600 text-zinc-300 hover:text-white flex items-center justify-center text-xs font-bold transition-colors cursor-pointer"
+                              title="Reduce font size"
+                            >
+                              -
+                            </button>
+                            <span className="text-[10px] font-mono font-bold text-purple-200 px-1 bg-purple-950/60 rounded border border-purple-800/40">
+                              {Math.round(fontSizeScale * 100)}%
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFontSizeScale(prev => Math.min(2.5, Math.round((prev + 0.1) * 10) / 10))
+                                playSoundEffect('pop')
+                              }}
+                              className="w-5 h-5 rounded bg-zinc-800 hover:bg-purple-600 text-zinc-300 hover:text-white flex items-center justify-center text-xs font-bold transition-colors cursor-pointer"
+                              title="Increase font size"
+                            >
+                              +
+                            </button>
+                          </div>
+                        </div>
+
+                        <textarea
+                          value={editingSegmentText}
+                          onChange={(e) => setEditingSegmentText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault()
+                              handleSaveSegmentEdit(activeSeg.id, editingSegmentText)
+                            } else if (e.key === 'Escape') {
+                              handleCancelSegmentEdit()
+                            }
+                          }}
+                          rows={2}
+                          autoFocus
+                          className="w-full bg-[#141524] border border-purple-400/60 rounded-lg p-2 text-sm text-white font-bold focus:outline-none focus:border-purple-300 resize-none shadow-inner"
+                          placeholder="Type caption text..."
+                        />
+
+                        <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                          <span>↵ Enter to save • Esc to cancel</span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={handleCancelSegmentEdit}
+                              className="px-2.5 py-1 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold cursor-pointer transition-colors"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSaveSegmentEdit(activeSeg.id, editingSegmentText)}
+                              className="px-3 py-1 rounded-md bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold shadow-md cursor-pointer transition-all active:scale-95 flex items-center gap-1"
+                            >
+                              <Check className="w-3 h-3" />
+                              <span>Save Text</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
                     ) : (
-                      <span
-                        className="inline-block font-bold tracking-wide leading-snug drop-shadow-[0_3px_8px_rgba(0,0,0,0.9)]"
-                        style={{
-                          fontSize: `${Math.round(18 * fontSizeScale)}px`,
-                          color: textColor,
-                          textShadow: '0 0 8px rgba(0,0,0,0.9), 1px 1px 2px #000, -1px -1px 2px #000',
-                          background: captionStyle === 'phrase_purple' ? 'rgba(88, 28, 135, 0.75)' : 'rgba(0, 0, 0, 0.55)',
-                          padding: '6px 14px',
-                          borderRadius: '8px',
-                          backdropFilter: 'blur(4px)',
-                          lineHeight: '1.3'
+                      /* INTERACTIVE CAPTION DISPLAY WITH FLOATING TOOLBAR */
+                      <div
+                        className={`pointer-events-auto group relative cursor-pointer transition-all duration-150 rounded-xl p-2 select-none ${
+                          captionHovered ? 'ring-2 ring-purple-500/80 bg-black/40 backdrop-blur-[2px] shadow-xl' : ''
+                        }`}
+                        onMouseEnter={() => setCaptionHovered(true)}
+                        onMouseLeave={() => {
+                          if (!isEditingActiveCaptionOnVideo) setCaptionHovered(false)
                         }}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setCaptionHovered(true)
+                        }}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation()
+                          setEditingSegmentId(activeSeg.id)
+                          setEditingSegmentText(activeSeg.text)
+                          setIsEditingActiveCaptionOnVideo(true)
+                        }}
+                        title="Click or double-click to edit text & adjust font size"
                       >
-                        {activeSeg.text}
-                      </span>
+                        {/* Floating On-Video Caption Toolbar */}
+                        {captionHovered && (
+                          <div
+                            className="absolute -top-11 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-[#0c0d18]/95 border border-purple-500/50 shadow-2xl backdrop-blur-md px-2 py-1 rounded-full text-xs z-40 select-none animate-in fade-in zoom-in-95 duration-100 whitespace-nowrap"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {/* Reduce Caption Size */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFontSizeScale(prev => Math.max(0.5, Math.round((prev - 0.1) * 10) / 10))
+                                playSoundEffect('pop')
+                              }}
+                              className="w-5 h-5 rounded-full bg-zinc-800 hover:bg-purple-600 text-zinc-200 hover:text-white flex items-center justify-center transition-colors cursor-pointer font-bold shadow-sm"
+                              title="Reduce caption size (-10%)"
+                            >
+                              <Minus className="w-3 h-3" />
+                            </button>
+
+                            {/* Font Size Percentage Badge */}
+                            <span
+                              onClick={() => {
+                                setFontSizeScale(1.0)
+                                playSoundEffect('pop')
+                              }}
+                              className="px-1.5 py-0.5 rounded-full bg-purple-950/80 border border-purple-800 text-[10px] font-mono font-extrabold text-purple-300 cursor-pointer hover:bg-purple-900 transition-colors"
+                              title="Current scale. Click to reset to 100%"
+                            >
+                              {Math.round(fontSizeScale * 100)}%
+                            </span>
+
+                            {/* Increase Caption Size */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFontSizeScale(prev => Math.min(2.5, Math.round((prev + 0.1) * 10) / 10))
+                                playSoundEffect('pop')
+                              }}
+                              className="w-5 h-5 rounded-full bg-zinc-800 hover:bg-purple-600 text-zinc-200 hover:text-white flex items-center justify-center transition-colors cursor-pointer font-bold shadow-sm"
+                              title="Increase caption size (+10%)"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+
+                            <div className="w-[1px] h-3 bg-zinc-700 mx-0.5" />
+
+                            {/* Quick Scale Chips */}
+                            <div className="flex items-center gap-0.5">
+                              {[
+                                { label: 'S', scale: 0.8 },
+                                { label: 'M', scale: 1.0 },
+                                { label: 'L', scale: 1.3 },
+                                { label: 'XL', scale: 1.6 }
+                              ].map((chip) => (
+                                <button
+                                  key={chip.label}
+                                  type="button"
+                                  onClick={() => {
+                                    setFontSizeScale(chip.scale)
+                                    playSoundEffect('pop')
+                                  }}
+                                  className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition-all cursor-pointer ${
+                                    Math.abs(fontSizeScale - chip.scale) < 0.05
+                                      ? 'bg-purple-600 text-white shadow-sm'
+                                      : 'bg-zinc-800/90 text-zinc-400 hover:text-zinc-200'
+                                  }`}
+                                  title={`${chip.label} (${chip.scale}x)`}
+                                >
+                                  {chip.label}
+                                </button>
+                              ))}
+                            </div>
+
+                            <div className="w-[1px] h-3 bg-zinc-700 mx-0.5" />
+
+                            {/* Direct Edit Button */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingSegmentId(activeSeg.id)
+                                setEditingSegmentText(activeSeg.text)
+                                setIsEditingActiveCaptionOnVideo(true)
+                              }}
+                              className="px-2 py-0.5 rounded-full bg-purple-600 hover:bg-purple-500 text-white text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer shadow-sm active:scale-95"
+                              title="Edit caption text directly"
+                            >
+                              <Edit2 className="w-2.5 h-2.5" />
+                              <span>Edit</span>
+                            </button>
+
+                            {/* Nudge Position Buttons */}
+                            <div className="flex items-center gap-0.5 ml-0.5">
+                              <button
+                                type="button"
+                                onClick={() => setTextPositionY(prev => Math.max(15, prev - 3))}
+                                className="w-4 h-4 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white flex items-center justify-center text-[9px]"
+                                title="Nudge caption up"
+                              >
+                                ▲
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setTextPositionY(prev => Math.min(85, prev + 3))}
+                                className="w-4 h-4 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white flex items-center justify-center text-[9px]"
+                                title="Nudge caption down"
+                              >
+                                ▼
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {isWordPop && currentWordText ? (
+                          <span
+                            className="inline-block font-black tracking-wide uppercase drop-shadow-[0_4px_12px_rgba(0,0,0,0.9)] transition-all"
+                            style={{
+                              fontSize: `${Math.round(28 * fontSizeScale)}px`,
+                              color: textColor,
+                              textShadow: '0 0 12px rgba(0,0,0,0.95), 0 2px 4px #000, 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000',
+                              WebkitTextStroke: captionStyle === 'word_red' ? '1.5px #ffffff' : '1.5px #000000',
+                              lineHeight: '1.2'
+                            }}
+                          >
+                            {currentWordText}
+                          </span>
+                        ) : (
+                          <span
+                            className="inline-block font-bold tracking-wide leading-snug drop-shadow-[0_3px_8px_rgba(0,0,0,0.9)] transition-all"
+                            style={{
+                              fontSize: `${Math.round(18 * fontSizeScale)}px`,
+                              color: textColor,
+                              textShadow: '0 0 8px rgba(0,0,0,0.9), 1px 1px 2px #000, -1px -1px 2px #000',
+                              background: captionStyle === 'phrase_purple' ? 'rgba(88, 28, 135, 0.75)' : 'rgba(0, 0, 0, 0.55)',
+                              padding: '6px 14px',
+                              borderRadius: '8px',
+                              backdropFilter: 'blur(4px)',
+                              lineHeight: '1.3'
+                            }}
+                          >
+                            {activeSeg.text}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                 )
@@ -2374,6 +2605,106 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                       <span className="block truncate font-semibold">{st.label}</span>
                     </button>
                   ))}
+                </div>
+              </div>
+
+              {/* Caption Font Size Stepper, Slider & Presets (Increase / Reduce) */}
+              <div className="p-3 rounded-xl bg-[#141522] border border-[#23253b] space-y-2.5 shrink-0 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Type className="h-3.5 w-3.5 text-purple-400" />
+                    <span className="text-xs font-bold text-zinc-200">Caption Font Size</span>
+                    <span className="text-[10px] text-zinc-400">(Increase / Reduce)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] font-mono font-bold text-purple-300 bg-purple-950/70 border border-purple-800/60 px-2 py-0.5 rounded-full">
+                      {Math.round(fontSizeScale * 100)}% ({fontSizeScale.toFixed(1)}x)
+                    </span>
+                    {fontSizeScale !== 1.0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFontSizeScale(1.0)
+                          playSoundEffect('pop')
+                        }}
+                        className="text-[10px] text-zinc-400 hover:text-purple-300 underline cursor-pointer"
+                        title="Reset to 100%"
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Stepper Buttons and Continuous Slider */}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFontSizeScale(prev => Math.max(0.5, Math.round((prev - 0.1) * 10) / 10))
+                      playSoundEffect('pop')
+                    }}
+                    className="h-7 px-2.5 rounded-lg bg-zinc-800 hover:bg-purple-600 text-zinc-200 hover:text-white text-xs font-bold flex items-center gap-1 border border-zinc-700 hover:border-purple-500 transition-all cursor-pointer shadow-sm active:scale-95 shrink-0"
+                    title="Reduce caption size (-10%)"
+                  >
+                    <Minus className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Smaller</span>
+                  </button>
+
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={2.5}
+                    step={0.05}
+                    value={fontSizeScale}
+                    onChange={(e) => setFontSizeScale(parseFloat(e.target.value))}
+                    className="flex-1 accent-purple-500 cursor-pointer h-2 bg-zinc-800 rounded-lg"
+                    title={`Caption scale: ${Math.round(fontSizeScale * 100)}%`}
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFontSizeScale(prev => Math.min(2.5, Math.round((prev + 0.1) * 10) / 10))
+                      playSoundEffect('pop')
+                    }}
+                    className="h-7 px-2.5 rounded-lg bg-zinc-800 hover:bg-purple-600 text-zinc-200 hover:text-white text-xs font-bold flex items-center gap-1 border border-zinc-700 hover:border-purple-500 transition-all cursor-pointer shadow-sm active:scale-95 shrink-0"
+                    title="Increase caption size (+10%)"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Bigger</span>
+                  </button>
+                </div>
+
+                {/* Quick Preset Buttons */}
+                <div className="grid grid-cols-5 gap-1 pt-0.5 text-center font-mono">
+                  {[
+                    { label: '0.8x', name: 'Compact', scale: 0.8 },
+                    { label: '1.0x', name: 'Normal', scale: 1.0 },
+                    { label: '1.3x', name: 'Large', scale: 1.3 },
+                    { label: '1.6x', name: 'Viral XL', scale: 1.6 },
+                    { label: '2.0x', name: 'Mega', scale: 2.0 }
+                  ].map((p) => {
+                    const isSelected = Math.abs(fontSizeScale - p.scale) < 0.05
+                    return (
+                      <button
+                        key={p.scale}
+                        type="button"
+                        onClick={() => {
+                          setFontSizeScale(p.scale)
+                          playSoundEffect('pop')
+                        }}
+                        className={`py-1 px-1 rounded-lg border text-[10px] font-semibold transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-purple-950/90 border-purple-500 text-purple-200 font-bold shadow-md shadow-purple-900/40'
+                            : 'bg-[#0d0e17] border-[#1e202f] text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
+                        }`}
+                        title={`${p.name} font size (${p.label})`}
+                      >
+                        <span className="block">{p.label}</span>
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
 
