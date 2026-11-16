@@ -12,6 +12,7 @@ import {
   YouTubeIcon, TikTokIcon, InstagramIcon, FacebookIcon, XTwitterIcon,
   PlatformBadge
 } from './SocialIcons'
+import { saveClipToDevice } from '../services/deviceStorage'
 
 export interface ClipItem {
   id: number
@@ -197,6 +198,12 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
   const [renderMessage, setRenderMessage] = useState<string>('')
   const [renderError, setRenderError] = useState<string | null>(null)
   const [renderSuccess, setRenderSuccess] = useState<boolean>(false)
+
+  // Fast Client-Side Export State (Zero-Upload, Device-Local)
+  const [isClientExporting, setIsClientExporting] = useState<boolean>(false)
+  const [clientExportProgress, setClientExportProgress] = useState<number>(0)
+  const [clientExportStatus, setClientExportStatus] = useState<string>('')
+  const [clientExportCancelRef, setClientExportCancelRef] = useState<{ cancelled: boolean }>({ cancelled: false })
 
   // Social metadata state
   const [metadata, setMetadata] = useState<any | null>(null)
@@ -623,6 +630,324 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
 
   const handleToggleEraseOverlay = (id: string) => {
     setCustomOverlays(prev => prev.map(o => o.id === id ? { ...o, erased: !o.erased } : o))
+  }
+
+  // Instant Client-Side Slicing / Trimming / Device Export (Zero Upload / 100% Free)
+  const handleInstantDeviceExport = async () => {
+    if (!videoRef.current) {
+      showToast('⚠️ No video loaded to export')
+      return
+    }
+
+    const video = videoRef.current
+    if (trimEnd <= trimStart) {
+      showToast('⚠️ Trim end must be greater than trim start')
+      return
+    }
+
+    const cancelToken = { cancelled: false }
+    setClientExportCancelRef(cancelToken)
+    setIsClientExporting(true)
+    setClientExportProgress(0)
+    setClientExportStatus('Initializing device recording engine...')
+
+    const prevTime = video.currentTime
+    const prevPaused = video.paused
+
+    try {
+      // 1. Determine target canvas dimensions based on aspectRatio
+      let outWidth = 720
+      let outHeight = 1280
+      if (aspectRatio === '16:9') {
+        outWidth = 1280
+        outHeight = 720
+      } else if (aspectRatio === '1:1') {
+        outWidth = 720
+        outHeight = 720
+      }
+
+      const canvas = document.createElement('canvas')
+      canvas.width = outWidth
+      canvas.height = outHeight
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('Could not initialize 2D canvas context')
+
+      // 2. Setup video stream and audio tracks
+      const canvasStream = canvas.captureStream(30)
+      
+      let audioTracks: MediaStreamTrack[] = []
+      try {
+        if ((video as any).captureStream) {
+          audioTracks = (video as any).captureStream().getAudioTracks()
+        } else if ((video as any).mozCaptureStream) {
+          audioTracks = (video as any).mozCaptureStream().getAudioTracks()
+        }
+      } catch (audioErr) {
+        console.warn('Direct audio stream capture not accessible:', audioErr)
+      }
+
+      const tracks = [...canvasStream.getVideoTracks(), ...audioTracks]
+      const combinedStream = new MediaStream(tracks)
+
+      // 3. Choose best supported MIME type
+      const supportedMimes = [
+        'video/mp4;codecs=avc1,mp4a.40.2',
+        'video/mp4',
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm'
+      ]
+      let selectedMime = 'video/webm'
+      for (const m of supportedMimes) {
+        if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(m)) {
+          selectedMime = m
+          break
+        }
+      }
+
+      const isMp4 = selectedMime.includes('mp4')
+      const recordedChunks: Blob[] = []
+      const recorder = new MediaRecorder(combinedStream, {
+        mimeType: selectedMime,
+        videoBitsPerSecond: 4_000_000
+      })
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          recordedChunks.push(e.data)
+        }
+      }
+
+      const totalSecs = Math.max(0.1, trimEnd - trimStart)
+
+      // 4. Seek to trimStart
+      video.pause()
+      video.currentTime = trimStart
+      await new Promise<void>((resolve) => {
+        const onSeeked = () => {
+          video.removeEventListener('seeked', onSeeked)
+          resolve()
+        }
+        video.addEventListener('seeked', onSeeked)
+      })
+
+      recorder.start(100)
+      await video.play().catch(() => {})
+
+      // 5. Draw animation frame loop
+      await new Promise<void>((resolve, reject) => {
+        const drawFrame = () => {
+          if (cancelToken.cancelled) {
+            try { recorder.stop() } catch {}
+            reject(new Error('Export cancelled by user'))
+            return
+          }
+
+          const currentT = video.currentTime
+
+          // Check if reached trimEnd
+          if (currentT >= trimEnd || video.ended) {
+            try { recorder.stop() } catch {}
+            resolve()
+            return
+          }
+
+          // Calculate progress %
+          const elapsed = Math.max(0, currentT - trimStart)
+          const pct = Math.min(99, Math.round((elapsed / totalSecs) * 100))
+          setClientExportProgress(pct)
+          setClientExportStatus(`Recording locally on your device: ${pct}% (${elapsed.toFixed(1)}s / ${totalSecs.toFixed(1)}s)...`)
+
+          // Clear background
+          ctx.fillStyle = '#000000'
+          ctx.fillRect(0, 0, outWidth, outHeight)
+
+          // Draw video with aspect ratio framing
+          const vw = video.videoWidth || outWidth
+          const vh = video.videoHeight || outHeight
+
+          if (framingMode === 'crop' || aspectRatio === '9:16') {
+            const scale = Math.max(outWidth / vw, outHeight / vh)
+            const dw = vw * scale
+            const dh = vh * scale
+            const dx = (outWidth - dw) / 2
+            const dy = (outHeight - dh) / 2
+            ctx.drawImage(video, dx, dy, dw, dh)
+          } else {
+            const scale = Math.min(outWidth / vw, outHeight / vh)
+            const dw = vw * scale
+            const dh = vh * scale
+            const dx = (outWidth - dw) / 2
+            const dy = (outHeight - dh) / 2
+            ctx.drawImage(video, dx, dy, dw, dh)
+          }
+
+          // Draw active subtitles if burnCaptions is on
+          if (burnCaptions && segments.length > 0) {
+            const activeSeg = segments.find(s => currentT >= s.start && currentT <= s.end)
+            if (activeSeg) {
+              ctx.save()
+              const capY = (textPositionY / 100) * outHeight
+              const capFontSize = Math.round(28 * fontSizeScale * (outHeight / 1280) * 1.4)
+              ctx.textAlign = 'center'
+              ctx.textBaseline = 'middle'
+              ctx.font = `bold ${capFontSize}px sans-serif`
+              ctx.shadowColor = '#000000'
+              ctx.shadowBlur = 8
+
+              const textMetrics = ctx.measureText(activeSeg.text)
+              const boxW = Math.min(outWidth * 0.9, textMetrics.width + 36)
+              const boxH = capFontSize * 1.6
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.65)'
+              ctx.beginPath()
+              if (ctx.roundRect) {
+                ctx.roundRect((outWidth - boxW) / 2, capY - boxH / 2, boxW, boxH, 12)
+              } else {
+                ctx.fillRect((outWidth - boxW) / 2, capY - boxH / 2, boxW, boxH)
+              }
+              ctx.fill()
+
+              ctx.strokeStyle = '#000000'
+              ctx.lineWidth = Math.max(3, Math.round(capFontSize * 0.16))
+              ctx.strokeText(activeSeg.text, outWidth / 2, capY)
+              ctx.fillStyle = '#facc15'
+              ctx.fillText(activeSeg.text, outWidth / 2, capY)
+              ctx.restore()
+            }
+          }
+
+          // Draw Watermark if enabled
+          if (watermark && watermarkText) {
+            ctx.save()
+            ctx.font = 'bold 22px sans-serif'
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.75)'
+            ctx.shadowColor = 'rgba(0,0,0,0.8)'
+            ctx.shadowBlur = 6
+            ctx.fillText(watermarkText, 24, 44)
+            ctx.restore()
+          }
+
+          // Draw Custom Overlays & Animated Outros
+          const activeOverlays = customOverlays.filter(o => !o.erased && currentT >= o.start_time && currentT <= o.end_time)
+          for (const o of activeOverlays) {
+            ctx.save()
+
+            const posX = o.position_x === 'left' ? outWidth * 0.22 : o.position_x === 'right' ? outWidth * 0.78 : outWidth * 0.5
+            let posY = (o.position_y / 100) * outHeight
+            const baseFontSize = Math.round(o.font_size * (outHeight / 1280) * 0.8)
+
+            const relO = currentT - o.start_time
+            let scaleVal = 1.0
+            if (o.animation === 'slide_up') {
+              const slideProgress = Math.min(1, relO / 0.4)
+              posY += (1 - slideProgress) * 45
+            } else if (o.animation === 'bounce') {
+              scaleVal = 1 + Math.sin(relO * 8) * 0.08
+            } else if (o.animation === 'pulse') {
+              scaleVal = 1 + Math.sin(relO * 5) * 0.12
+            } else if (o.animation === 'glow') {
+              ctx.shadowColor = '#facc15'
+              ctx.shadowBlur = 18 + Math.sin(relO * 6) * 12
+            }
+
+            const colorMap: Record<string, string> = {
+              yellow: '#facc15',
+              white: '#ffffff',
+              red: '#ef4444',
+              cyan: '#06b6d4',
+              purple: '#c084fc',
+              green: '#22c55e'
+            }
+            const textColor = colorMap[o.color] || '#facc15'
+
+            ctx.translate(posX, posY)
+            ctx.scale(scaleVal, scaleVal)
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'middle'
+            ctx.font = `900 ${baseFontSize}px sans-serif`
+
+            ctx.lineJoin = 'round'
+            ctx.miterLimit = 2
+            ctx.strokeStyle = '#000000'
+            ctx.lineWidth = Math.max(4, Math.round(baseFontSize * 0.18))
+            ctx.strokeText(o.text, 0, 0)
+
+            ctx.fillStyle = textColor
+            ctx.fillText(o.text, 0, 0)
+
+            ctx.restore()
+          }
+
+          if (!video.paused && !video.ended) {
+            requestAnimationFrame(drawFrame)
+          }
+        }
+
+        requestAnimationFrame(drawFrame)
+      })
+
+      // 6. Complete recording and prepare final Blob
+      setClientExportProgress(100)
+      setClientExportStatus('Finalizing video file and saving to device storage...')
+
+      const finalBlob = await new Promise<Blob>((resolve) => {
+        recorder.onstop = () => {
+          const b = new Blob(recordedChunks, { type: selectedMime })
+          resolve(b)
+        }
+      })
+
+      // 7. Trigger browser download directly to user's computer/phone
+      const downloadUrl = URL.createObjectURL(finalBlob)
+      const downloadLink = document.createElement('a')
+      const ext = isMp4 ? 'mp4' : 'webm'
+      const cleanTitle = (clipTitle.trim() || 'edited_short').replace(/[^a-zA-Z0-9_-]/g, '_')
+      downloadLink.href = downloadUrl
+      downloadLink.download = `${cleanTitle}_device_export.${ext}`
+      document.body.appendChild(downloadLink)
+      downloadLink.click()
+      document.body.removeChild(downloadLink)
+
+      // 8. Permanently save to device storage (IndexedDB)
+      try {
+        const localId = `device_${Date.now()}`
+        await saveClipToDevice({
+          id: localId,
+          title: clipTitle.trim() || 'Device Edited Short',
+          duration: totalSecs,
+          aspectRatio: aspectRatio,
+          createdAt: new Date().toISOString(),
+          status: 'completed',
+          fileSizeBytes: finalBlob.size,
+          videoBlob: finalBlob
+        }, finalBlob)
+        showToast('🎉 Fast Export Complete! Video downloaded & saved to your device.')
+      } catch (idbErr) {
+        console.warn('Saved to download, but IndexedDB write skipped:', idbErr)
+        showToast('🎉 Video downloaded to your device!')
+      }
+
+      onClipUpdated({
+        ...clip,
+        title: clipTitle.trim(),
+        aspect_ratio: aspectRatio,
+        rawBlob: finalBlob,
+        localBlobUrl: downloadUrl,
+        isDeviceStored: true
+      })
+    } catch (err: any) {
+      if (!cancelToken.cancelled) {
+        console.error('Instant device export error:', err)
+        showToast(`❌ Device export error: ${err.message || 'Unknown error'}`)
+      }
+    } finally {
+      setIsClientExporting(false)
+      video.pause()
+      video.currentTime = prevTime
+      if (!prevPaused) {
+        video.play().catch(() => {})
+      }
+    }
   }
 
   // Trigger Re-Render with User's Edits
@@ -1070,28 +1395,104 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
             <span className="text-[10px] px-1 rounded bg-zinc-800 text-zinc-400 font-mono">?</span>
           </button>
 
-          {/* Primary Re-Render / Export Button */}
+          {/* Fast Device Export Button (Zero Upload / Instant) */}
           <button
+            type="button"
+            onClick={handleInstantDeviceExport}
+            disabled={isClientExporting || isRendering}
+            className="flex items-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-xs font-bold shadow-lg shadow-emerald-950/40 transition-all cursor-pointer transform hover:scale-[1.02] disabled:opacity-50 shrink-0"
+            title="Instant Export on your device: 0s upload, 0 MB cloud bandwidth, downloads directly to your PC/phone"
+          >
+            {isClientExporting ? (
+              <>
+                <RefreshCw className="h-4 w-4 animate-spin text-white" />
+                <span className="hidden sm:inline">Exporting {clientExportProgress}%...</span>
+                <span className="sm:hidden">{clientExportProgress}%</span>
+              </>
+            ) : (
+              <>
+                <Zap className="h-4 w-4 text-amber-300 fill-amber-300" />
+                <span className="hidden sm:inline">⚡ Fast Device Export</span>
+                <span className="sm:hidden">⚡ Export</span>
+              </>
+            )}
+          </button>
+
+          {/* Cloud Server Studio Render */}
+          <button
+            type="button"
             onClick={handleTriggerReRender}
-            disabled={isRendering}
-            className="flex items-center gap-2 px-3.5 sm:px-5 py-2 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-xs font-bold shadow-lg shadow-purple-900/30 transition-all cursor-pointer transform hover:scale-[1.02] disabled:opacity-50"
+            disabled={isRendering || isClientExporting}
+            className="flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-xs font-bold shadow-lg shadow-purple-900/30 transition-all cursor-pointer transform hover:scale-[1.02] disabled:opacity-50 shrink-0"
+            title="Render on Cloud Engine (4K, ASS Karaoke Captions, Smart Face Tracking)"
           >
             {isRendering ? (
               <>
                 <RefreshCw className="h-4 w-4 animate-spin" />
-                <span className="hidden sm:inline">Rendering {renderProgress}%...</span>
+                <span className="hidden sm:inline">Cloud {renderProgress}%...</span>
                 <span className="sm:hidden">{renderProgress}%</span>
               </>
             ) : (
               <>
                 <Sparkles className="h-4 w-4 text-amber-300" />
-                <span className="hidden sm:inline">⚡ Re-Render with Edits</span>
-                <span className="sm:hidden">⚡ Render</span>
+                <span className="hidden sm:inline">☁️ Cloud Render</span>
+                <span className="sm:hidden">☁️ Cloud</span>
               </>
             )}
           </button>
         </div>
       </header>
+
+      {/* FAST CLIENT-SIDE EXPORT MODAL */}
+      {isClientExporting && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#0f101b] border border-cyan-500/40 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5 text-center relative animate-in fade-in zoom-in-95 duration-150">
+            <div className="h-14 w-14 rounded-2xl bg-gradient-to-tr from-cyan-600 to-emerald-500 mx-auto flex items-center justify-center text-white shadow-lg shadow-cyan-950/60">
+              <Zap className="h-7 w-7 text-amber-300 fill-amber-300 animate-bounce" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white">⚡ Instant Device Export</h3>
+              <p className="text-xs text-zinc-400">Rendering directly on this device • Zero cloud upload delay</p>
+            </div>
+
+            {/* Progress Bar */}
+            <div className="space-y-2">
+              <div className="w-full bg-zinc-800 rounded-full h-3 overflow-hidden border border-cyan-500/30">
+                <div
+                  className="bg-gradient-to-r from-cyan-500 via-teal-400 to-emerald-400 h-full transition-all duration-150"
+                  style={{ width: `${clientExportProgress}%` }}
+                />
+              </div>
+              <div className="flex items-center justify-between text-xs text-zinc-400 font-mono">
+                <span className="truncate max-w-[260px] text-left">{clientExportStatus}</span>
+                <span className="font-bold text-cyan-300 text-sm shrink-0">{clientExportProgress}%</span>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-cyan-950/30 border border-cyan-500/20 text-[11px] text-cyan-200 text-left space-y-1">
+              <div className="flex items-center gap-1.5 font-bold">
+                <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400" />
+                <span>Device-Only Privacy & Instant Slicing</span>
+              </div>
+              <p className="text-zinc-400">
+                Your video is cut and processed entirely on your machine. When complete, it automatically downloads and saves to your device storage.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (clientExportCancelRef) clientExportCancelRef.cancelled = true
+                setIsClientExporting(false)
+              }}
+              className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold cursor-pointer transition-colors"
+            >
+              Cancel Export
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* RENDER PROGRESS TOAST */}
       {isRendering && (
@@ -2954,7 +3355,72 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                   <Share2 className="h-3.5 w-3.5 text-pink-400" />
                   <span>Export & Multi-Platform Publishing</span>
                 </h4>
-                <p className="text-[11px] text-zinc-400">4K Ultra HD resolution, custom watermark & direct social sharing.</p>
+                <p className="text-[11px] text-zinc-400">Choose instant device export or full cloud rendering with 4K & ASS captions.</p>
+              </div>
+
+              {/* PRIMARY EXPORT ENGINE SELECTOR CARD */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* 1. Fast Device Export */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-b from-[#0d1c1a] to-[#0c1418] border border-emerald-500/40 space-y-2.5 flex flex-col justify-between shadow-lg">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5 text-emerald-300 font-bold text-xs">
+                      <Zap className="h-4 w-4 fill-emerald-400 text-emerald-400" />
+                      <span>⚡ Fast Device Export</span>
+                    </div>
+                    <p className="text-[11px] text-zinc-300 leading-snug">
+                      Instant client-side slice & render. 0s cloud upload delay, 0 MB cloud storage used. Perfect for cuts, outside videos, and animated outros.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleInstantDeviceExport}
+                    disabled={isClientExporting || isRendering}
+                    className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    {isClientExporting ? (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        <span>Exporting {clientExportProgress}%...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Download className="h-3.5 w-3.5" />
+                        <span>⚡ Export on This Device</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* 2. Studio Cloud Render */}
+                <div className="p-3.5 rounded-2xl bg-gradient-to-b from-[#180f24] to-[#110e1a] border border-purple-500/40 space-y-2.5 flex flex-col justify-between shadow-lg">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5 text-purple-300 font-bold text-xs">
+                      <Sparkles className="h-4 w-4 text-purple-400" />
+                      <span>☁️ Studio Cloud Render</span>
+                    </div>
+                    <p className="text-[11px] text-zinc-300 leading-snug">
+                      High-end FFmpeg server processing with 4K Ultra HD encoding, ASS karaoke subtitle burn-in, and smart face centering.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleTriggerReRender}
+                    disabled={isRendering || isClientExporting}
+                    className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-xs font-bold transition-all shadow-md flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    {isRendering ? (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        <span>Rendering {renderProgress}%...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="h-3.5 w-3.5 text-amber-300" />
+                        <span>☁️ Start Cloud Render</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
 
               {/* Resolution Selector (4K Ultra HD, 1080p, 720p, 480p) */}

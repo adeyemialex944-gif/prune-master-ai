@@ -51,10 +51,32 @@ app = FastAPI(
     version="0.1.0"
 )
 
-# High-performance GZip compression (reduces JSON & asset size by 70-80% over the wire)
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+# High-performance selective GZip compression
+# Compresses JSON, HTML, and JS assets by 70-80% over the wire, but bypasses video/audio binaries
+# to preserve HTTP 206 Partial Content (Byte-Range) streaming for instant video scrubbing.
+class SmartGZipMiddleware:
+    def __init__(self, app, minimum_size: int = 1000):
+        self.app = app
+        self.gzip_app = GZipMiddleware(app, minimum_size=minimum_size)
 
-# HTTP Asset Caching Middleware (0ms repeated loads from browser disk/memory cache)
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            # Skip gzip compression for media files to preserve HTTP 206 Byte-Range seeking
+            if path.startswith("/media/") or path.lower().endswith((".mp4", ".webm", ".mov", ".avi", ".mp3", ".wav", ".jpg", ".jpeg", ".png", ".webp")):
+                new_headers = []
+                for k, v in scope.get("headers", []):
+                    if k.lower() == b"accept-encoding":
+                        continue
+                    new_headers.append((k, v))
+                scope["headers"] = new_headers
+                await self.app(scope, receive, send)
+                return
+        await self.gzip_app(scope, receive, send)
+
+app.add_middleware(SmartGZipMiddleware, minimum_size=1000)
+
+# HTTP Asset Caching & Range Streaming Middleware (0ms repeated loads from browser disk/memory cache)
 @app.middleware("http")
 async def add_cache_control_headers(request, call_next):
     response = await call_next(request)
@@ -63,6 +85,7 @@ async def add_cache_control_headers(request, call_next):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     elif path.startswith("/media/"):
         response.headers["Cache-Control"] = "public, max-age=86400"
+        response.headers["Accept-Ranges"] = "bytes"
     elif path == "/" or path.endswith(".html"):
         response.headers["Cache-Control"] = "no-cache, must-revalidate"
     return response

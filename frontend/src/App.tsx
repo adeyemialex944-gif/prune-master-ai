@@ -701,7 +701,24 @@ export default function App() {
     }
   }
   const loadVideos = async (scopeAll?: boolean, overrideToken?: string) => {
-    setIsLoadingVideos(true)
+    // 1. Frame 0 Instant Cache: Read previously cached videos from localStorage
+    try {
+      const cached = localStorage.getItem('pm_cached_videos_v1')
+      if (cached) {
+        const parsed = JSON.parse(cached)
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setVideos(parsed)
+          setIsLoadingVideos(false)
+        } else {
+          setIsLoadingVideos(true)
+        }
+      } else {
+        setIsLoadingVideos(true)
+      }
+    } catch {
+      setIsLoadingVideos(true)
+    }
+
     try {
       const useScope = scopeAll !== undefined ? scopeAll : directorScopeAll
       const scopeParam = useScope ? '?all_users=true' : ''
@@ -711,6 +728,10 @@ export default function App() {
       if (res.ok) {
         const data: VideoItem[] = await res.json()
         setVideos(data)
+        try {
+          // Cache up to 40 videos for instant offline/frame-0 render next visit
+          localStorage.setItem('pm_cached_videos_v1', JSON.stringify(data.slice(0, 40)))
+        } catch {}
       }
     } catch (err) {
       console.error('Failed to load videos:', err)
@@ -731,18 +752,43 @@ export default function App() {
   }
 
   const loadClips = async (scopeAll?: boolean, overrideToken?: string) => {
-    setIsLoadingClips(true)
+    // 1. Instant Frame 0: Read clips from device storage (IndexedDB) and hydrate UI immediately
+    let deviceClips: LocalDeviceClip[] = []
+    try {
+      deviceClips = await getClipsFromDevice()
+      if (deviceClips.length > 0) {
+        const instantClips: ClipItem[] = deviceClips.map(dc => ({
+          id: typeof dc.id === 'number' ? dc.id : Number(dc.id) || 9999,
+          video_id: dc.videoId || 0,
+          title: dc.title,
+          start_time: 0,
+          end_time: dc.duration,
+          aspect_ratio: dc.aspectRatio || '9:16',
+          file_path: dc.blobUrl || '',
+          thumbnail_path: dc.thumbnailUrl || null,
+          status: dc.status || 'completed',
+          caption_style: 'word_red',
+          created_at: dc.createdAt,
+          localBlobUrl: dc.blobUrl,
+          isDeviceStored: !!dc.videoBlob,
+          deviceStorageSizeMB: dc.fileSizeBytes ? (dc.fileSizeBytes / (1024 * 1024)).toFixed(1) : undefined,
+          rawBlob: dc.videoBlob
+        }))
+        setClips(instantClips)
+        setIsLoadingClips(false)
+      }
+    } catch (e) {
+      console.warn('Error loading device clips:', e)
+    }
+
+    if (deviceClips.length === 0) {
+      setIsLoadingClips(true)
+    }
+
     try {
       const useScope = scopeAll !== undefined ? scopeAll : directorScopeAll
       const scopeParam = useScope ? '?all_users=true' : ''
 
-      // 1. Read clips from device storage (IndexedDB)
-      let deviceClips: LocalDeviceClip[] = []
-      try {
-        deviceClips = await getClipsFromDevice()
-      } catch (e) {
-        console.warn('Error loading device clips:', e)
-      }
       const deviceMap = new Map(deviceClips.map(dc => [String(dc.id), dc]))
 
       // 2. Read clips from server
@@ -3003,6 +3049,8 @@ export default function App() {
                     <img
                       src={currentUser.avatar_url}
                       alt={currentUser.username}
+                      loading="lazy"
+                      decoding="async"
                       className="h-8 w-8 rounded-full object-cover border border-purple-500/60 shadow-md shrink-0"
                     />
                   ) : (
@@ -3264,6 +3312,8 @@ export default function App() {
                   <img
                     src={currentUser.avatar_url}
                     alt={currentUser.username}
+                    loading="lazy"
+                    decoding="async"
                     className="h-7 w-7 rounded-full object-cover border border-purple-500/50 shadow-sm shrink-0"
                   />
                 ) : (
@@ -3601,7 +3651,14 @@ export default function App() {
                       >
                         <div className="aspect-[9/16] relative bg-zinc-900 overflow-hidden">
                           {c.thumbnail_path ? (
-                            <img src={c.thumbnail_path} alt={c.title} className="w-full h-full object-cover" />
+                            <img
+                              src={c.thumbnail_path}
+                              alt={c.title}
+                              loading="lazy"
+                              decoding="async"
+                              className="w-full h-full object-cover"
+                              onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none' }}
+                            />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-zinc-600">
                               <Video className="h-8 w-8" />
@@ -3971,7 +4028,14 @@ export default function App() {
                                 />
                                 <div className="h-10 w-12 rounded-lg bg-black/60 overflow-hidden relative shrink-0 border border-zinc-800 flex items-center justify-center">
                                   {v.thumbnail_path ? (
-                                    <img src={v.thumbnail_path} alt={v.original_name} className="w-full h-full object-cover" />
+                                    <img
+                                      src={v.thumbnail_path}
+                                      alt={v.original_name}
+                                      loading="lazy"
+                                      decoding="async"
+                                      className="w-full h-full object-cover"
+                                      onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none' }}
+                                    />
                                   ) : (
                                     <FileVideo className="h-5 w-5 text-zinc-600" />
                                   )}
@@ -4932,7 +4996,14 @@ export default function App() {
                       >
                         <div className="w-16 h-20 rounded-lg bg-black overflow-hidden relative shrink-0 border border-zinc-800">
                           {clip.thumbnail_path ? (
-                            <img src={clip.thumbnail_path} alt={clip.title} className="w-full h-full object-cover" />
+                            <img
+                              src={clip.thumbnail_path}
+                              alt={clip.title}
+                              loading="lazy"
+                              decoding="async"
+                              className="w-full h-full object-cover"
+                              onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none' }}
+                            />
                           ) : (
                             <FileVideo className="h-6 w-6 text-zinc-600 m-auto mt-6" />
                           )}
@@ -5027,7 +5098,10 @@ export default function App() {
                               <img
                                 src={vid.thumbnail_path}
                                 alt={vid.original_name}
+                                loading="lazy"
+                                decoding="async"
                                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none' }}
                               />
                             ) : (
                               <FileVideo className="h-10 w-10 text-zinc-600" />
@@ -5616,7 +5690,14 @@ export default function App() {
                           >
                             <div className="aspect-[9/16] max-h-28 bg-black rounded-lg overflow-hidden mb-2 relative flex items-center justify-center">
                               {c.thumbnail_path ? (
-                                <img src={c.thumbnail_path} alt={c.title} className="w-full h-full object-cover" />
+                                <img
+                                  src={c.thumbnail_path}
+                                  alt={c.title}
+                                  loading="lazy"
+                                  decoding="async"
+                                  className="w-full h-full object-cover"
+                                  onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none' }}
+                                />
                               ) : (
                                 <FileVideo className="h-6 w-6 text-zinc-600" />
                               )}
@@ -5767,7 +5848,10 @@ export default function App() {
                               <img
                                 src={clip.thumbnail_path}
                                 alt={clip.title}
+                                loading="lazy"
+                                decoding="async"
                                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none' }}
                               />
                             ) : (
                               <FileVideo className="h-12 w-12 text-zinc-600" />
@@ -7866,6 +7950,8 @@ export default function App() {
                       <img
                         src={profileAvatarUrl}
                         alt="Profile avatar"
+                        loading="lazy"
+                        decoding="async"
                         className="h-16 w-16 rounded-2xl object-cover border-2 border-purple-500/70 shadow-lg"
                       />
                     ) : (
@@ -7932,7 +8018,7 @@ export default function App() {
                         }`}
                         title={av.name}
                       >
-                        <img src={av.url} alt={av.name} className="h-9 w-9 rounded-lg mx-auto" />
+                        <img src={av.url} alt={av.name} loading="lazy" decoding="async" className="h-9 w-9 rounded-lg mx-auto" />
                       </button>
                     ))}
                   </div>
