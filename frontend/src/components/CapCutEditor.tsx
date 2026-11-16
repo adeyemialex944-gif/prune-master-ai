@@ -331,6 +331,42 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
     showToast('🔄 Reset timeline back to full video')
   }
 
+  // Interactive Draggable In/Out Trim Handles on Timeline Track
+  const handleStartTrimDrag = (edge: 'start' | 'end', e: React.MouseEvent | React.TouchEvent) => {
+    e.stopPropagation()
+    const trackElement = (e.currentTarget as HTMLElement).closest('.video-track-container') as HTMLElement
+    if (!trackElement) return
+
+    const rect = trackElement.getBoundingClientRect()
+    const handleMove = (moveEv: MouseEvent | TouchEvent) => {
+      const clientX = 'touches' in moveEv ? moveEv.touches[0].clientX : (moveEv as MouseEvent).clientX
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+      const targetTime = Math.round(ratio * (duration || 60) * 10) / 10
+
+      if (edge === 'start') {
+        const newStart = Math.min(targetTime, Math.max(0, trimEnd - 0.5))
+        setTrimStart(newStart)
+        seekTo(newStart)
+      } else {
+        const newEnd = Math.max(targetTime, Math.min(duration || 60, trimStart + 0.5))
+        setTrimEnd(newEnd)
+        seekTo(newEnd)
+      }
+    }
+
+    const handleUp = () => {
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+      window.removeEventListener('touchmove', handleMove)
+      window.removeEventListener('touchend', handleUp)
+    }
+
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+    window.addEventListener('touchmove', handleMove)
+    window.addEventListener('touchend', handleUp)
+  }
+
   const handleAddCaptionAtPlayhead = () => {
     const id = `caption_${Date.now()}`
     const newOverlay: CustomTextOverlay = {
@@ -355,9 +391,14 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
     if (file) {
       const objectUrl = URL.createObjectURL(file)
       setActiveVideoSrc(objectUrl)
-      setClipTitle(file.name.replace(/\.[^/.]+$/, ''))
+      const cleanTitle = file.name.replace(/\.[^/.]+$/, '')
+      setClipTitle(cleanTitle)
       setSplitPoints([])
-      showToast(`🎬 Imported "${file.name}"`)
+      clip.rawBlob = file
+      clip.localBlobUrl = objectUrl
+      clip.title = cleanTitle
+      clip.video_id = 0
+      showToast(`🎬 Imported outside video: "${file.name}"`)
       if (videoRef.current) {
         videoRef.current.src = objectUrl
         videoRef.current.load()
@@ -1970,7 +2011,7 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
 
               {/* TRACK 1: VIDEO TRACK */}
               <div
-                className="relative h-12 border-b border-[#1f2133] bg-[#0c0d16] flex items-center px-1 cursor-pointer group"
+                className="relative h-12 border-b border-[#1f2133] bg-[#0c0d16] flex items-center px-1 cursor-pointer group video-track-container"
                 onClick={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect()
                   const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
@@ -1986,18 +2027,38 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                 {/* Active Video Clip Region */}
                 {duration > 0 && (
                   <div
-                    className="absolute top-1 bottom-1 rounded-md bg-gradient-to-r from-purple-800/70 via-indigo-700/70 to-purple-800/70 border border-purple-400 shadow flex items-center justify-between px-2.5 pointer-events-none transition-all"
+                    className="absolute top-1 bottom-1 rounded-md bg-gradient-to-r from-purple-800/70 via-indigo-700/70 to-purple-800/70 border border-purple-400 shadow flex items-center justify-between px-2.5 transition-all group/clip"
                     style={{
                       left: `${(Math.max(0, trimStart) / (duration || 1)) * 100}%`,
                       width: `${(Math.max(0.1, trimEnd - trimStart) / (duration || 1)) * 100}%`
                     }}
                   >
-                    <span className="text-[10px] text-white font-semibold truncate select-none pl-20">
+                    {/* Left In-Point Trim Handle */}
+                    <div
+                      onMouseDown={(e) => handleStartTrimDrag('start', e)}
+                      onTouchStart={(e) => handleStartTrimDrag('start', e)}
+                      className="absolute -left-1.5 top-0 bottom-0 w-3 bg-amber-400 hover:bg-amber-300 active:bg-amber-200 cursor-ew-resize rounded-l-md flex items-center justify-center shadow-lg z-30 pointer-events-auto"
+                      title="Drag left handle to trim in-point"
+                    >
+                      <div className="w-0.5 h-3 bg-black/70 rounded" />
+                    </div>
+
+                    <span className="text-[10px] text-white font-semibold truncate select-none pl-20 pointer-events-none">
                       🎬 {clipTitle}
                     </span>
-                    <span className="text-[9px] font-mono text-purple-200 bg-purple-950/80 px-1.5 py-0.5 rounded border border-purple-700/60">
+                    <span className="text-[9px] font-mono text-purple-200 bg-purple-950/80 px-1.5 py-0.5 rounded border border-purple-700/60 pointer-events-none">
                       {(Math.max(0, trimEnd - trimStart)).toFixed(1)}s
                     </span>
+
+                    {/* Right Out-Point Trim Handle */}
+                    <div
+                      onMouseDown={(e) => handleStartTrimDrag('end', e)}
+                      onTouchStart={(e) => handleStartTrimDrag('end', e)}
+                      className="absolute -right-1.5 top-0 bottom-0 w-3 bg-amber-400 hover:bg-amber-300 active:bg-amber-200 cursor-ew-resize rounded-r-md flex items-center justify-center shadow-lg z-30 pointer-events-auto"
+                      title="Drag right handle to trim out-point"
+                    >
+                      <div className="w-0.5 h-3 bg-black/70 rounded" />
+                    </div>
                   </div>
                 )}
 
