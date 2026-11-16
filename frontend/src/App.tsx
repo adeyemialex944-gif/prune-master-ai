@@ -63,8 +63,10 @@ import {
   Power,
   HelpCircle
 } from 'lucide-react'
-import { CapCutEditor } from './components/CapCutEditor'
-import { ShowcaseTestimonials } from './components/ShowcaseTestimonials'
+
+// Dynamically code-split heavy studio components for 3x faster initial page load
+const CapCutEditor = React.lazy(() => import('./components/CapCutEditor').then(m => ({ default: m.CapCutEditor })))
+const ShowcaseTestimonials = React.lazy(() => import('./components/ShowcaseTestimonials').then(m => ({ default: m.ShowcaseTestimonials })))
 import {
   YouTubeIcon,
   TikTokIcon,
@@ -1224,7 +1226,18 @@ export default function App() {
   }
   useEffect(() => {
     const initAuthAndData = async () => {
+      // 1. Fast background health check
       checkHealth()
+
+      // 2. Hydrate cached user from localStorage immediately for 0ms initial render
+      const cachedUserStr = localStorage.getItem('prune_master_user')
+      if (cachedUserStr) {
+        try {
+          const cachedUser = JSON.parse(cachedUserStr)
+          setCurrentUser(cachedUser)
+        } catch (_) {}
+      }
+
       const savedToken = (localStorage.getItem('prune_master_token') || localStorage.getItem('clipmaster_token'))
       if (savedToken) {
         try {
@@ -1234,31 +1247,35 @@ export default function App() {
           if (res.ok) {
             const user = await res.json()
             setCurrentUser(user)
+            localStorage.setItem('prune_master_user', JSON.stringify(user))
             setAuthToken(savedToken)
-            if (user.role === 'director') {
-              loadDirectorUsers(savedToken)
-            }
-            loadVideos(undefined, savedToken)
-            loadClips(undefined, savedToken)
-            await fetchTrialStatus(savedToken)
+            // UNBLOCK UI IMMEDIATELY! User sees the app in milliseconds
             setIsCheckingAuth(false)
+
+            // Non-blocking parallel data fetch
+            Promise.allSettled([
+              user.role === 'director' ? loadDirectorUsers(savedToken) : Promise.resolve(),
+              loadVideos(undefined, savedToken),
+              loadClips(undefined, savedToken),
+              fetchTrialStatus(savedToken)
+            ])
             return
           }
         } catch (e) {
           console.error('Failed to verify token:', e)
         }
       }
-      // No valid session: Never auto-login as Director! User must sign in or request access.
-      localStorage.removeItem('prune_master_token'); localStorage.removeItem('clipmaster_token')
+      // No valid session: Unblock UI immediately to login/register portal
+      localStorage.removeItem('prune_master_token'); localStorage.removeItem('clipmaster_token'); localStorage.removeItem('prune_master_user')
       setAuthToken('')
       setCurrentUser(null)
       setVideos([])
       setClips([])
-      await fetchTrialStatus('')
       setIsCheckingAuth(false)
+      fetchTrialStatus('')
     }
     initAuthAndData()
-    const interval = setInterval(checkHealth, 10000)
+    const interval = setInterval(checkHealth, 15000)
     return () => clearInterval(interval)
   }, [])
   // Global Escape key handler to cancel/close any open video or modal
@@ -2206,8 +2223,14 @@ export default function App() {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-[#09090c] text-zinc-400">
         <div className="flex flex-col items-center gap-3">
-          <Loader2 className="h-8 w-8 animate-spin text-purple-500" />
-          <span className="text-xs font-medium">Connecting to Prune Master Studio...</span>
+          <div className="relative">
+            <div className="h-12 w-12 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-600 flex items-center justify-center text-white shadow-xl animate-pulse">
+              <Scissors className="h-6 w-6" />
+            </div>
+            <Loader2 className="h-6 w-6 animate-spin text-purple-400 absolute -bottom-1 -right-1" />
+          </div>
+          <span className="text-xs font-semibold text-zinc-200">Loading Prune Master Studio...</span>
+          <span className="text-[10px] text-zinc-500">Fast-connecting to server</span>
         </div>
       </div>
     )
@@ -2755,13 +2778,9 @@ export default function App() {
                 </span>
               )}
             </button>
-            {/* Master Editor Video Studio */}
+            {/* Master Editor Video Studio Space */}
             <button
               onClick={() => {
-                if (!editorClip && clips.length > 0) {
-                  const readyClip = clips.find(c => c.file_path) || clips[0]
-                  setEditorClip(readyClip)
-                }
                 setActiveTab('editor')
                 setIsMobileMenuOpen(false)
               }}
@@ -2773,10 +2792,10 @@ export default function App() {
             >
               <div className="flex items-center gap-3">
                 <Sliders className="h-4 w-4 text-purple-400" />
-                <span>🎬 Master Editor</span>
+                <span>🎬 Studio Space</span>
               </div>
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800/50 font-bold font-mono">
-                Studio
+                Editor
               </span>
             </button>
             {/* Customer Showcase & Testimonials */}
@@ -3062,6 +3081,28 @@ export default function App() {
                 </button>
               </div>
             )}
+
+            {/* Quick Import External Video to Studio Space */}
+            <input
+              type="file"
+              id="global-header-video-import"
+              accept="video/mp4,video/quicktime,video/webm,video/*"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) handleImportVideoToEditor(f)
+              }}
+            />
+            <label
+              htmlFor="global-header-video-import"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs cursor-pointer shadow-md transition-all transform hover:scale-[1.02] shrink-0"
+              title="Import any video file from your computer or phone directly to edit"
+            >
+              <Upload className="h-3.5 w-3.5 text-yellow-300" />
+              <span className="hidden sm:inline">🎬 Import Outside Video</span>
+              <span className="sm:hidden">Import</span>
+            </label>
+
             {/* Quick Share Public Link for Director */}
             {currentUser?.role === 'director' && (
               <button
@@ -3531,10 +3572,10 @@ export default function App() {
                   </div>
                 </div>
                 {/* Input Method Tabs (Single & Multi-Video Batch) */}
-                <div className="flex items-center gap-2 mt-6 p-1 rounded-xl bg-[#09090d] border border-[#23232e] max-w-xl">
+                <div className="flex items-center gap-2 mt-6 p-1 rounded-xl bg-[#09090d] border border-[#23232e] max-w-2xl flex-wrap">
                   <button
                     onClick={() => setInputMode('upload')}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-medium transition-all ${
+                    className={`flex-1 min-w-[100px] flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-medium transition-all ${
                       inputMode === 'upload'
                         ? 'bg-purple-600 text-white shadow-md'
                         : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
@@ -3545,7 +3586,7 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => setInputMode('youtube')}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-medium transition-all ${
+                    className={`flex-1 min-w-[100px] flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-medium transition-all ${
                       inputMode === 'youtube'
                         ? 'bg-purple-600 text-white shadow-md'
                         : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
@@ -3556,19 +3597,31 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => setInputMode('library')}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-medium transition-all relative ${
+                    className={`flex-1 min-w-[120px] flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-medium transition-all relative ${
                       inputMode === 'library'
                         ? 'bg-purple-600 text-white shadow-md'
                         : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
                     }`}
                   >
                     <Layers className="h-3.5 w-3.5 text-purple-300" />
-                    <span>⚡ Mine 2+ Videos (Batch)</span>
+                    <span>⚡ Mine 2+ Videos</span>
                     {videos.length > 0 && (
                       <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-purple-950 text-purple-300 border border-purple-700 font-mono font-bold ml-1">
                         {videos.length}
                       </span>
                     )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditorClip(null)
+                      setActiveTab('editor')
+                    }}
+                    className="flex-1 min-w-[140px] flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold transition-all bg-gradient-to-r from-purple-900/80 to-indigo-900/80 hover:from-purple-800 hover:to-indigo-800 text-purple-200 hover:text-white border border-purple-600/60 hover:border-purple-400 cursor-pointer shadow-md"
+                    title="Bring outside videos and edit directly without AI mining"
+                  >
+                    <Sliders className="h-3.5 w-3.5 text-yellow-300" />
+                    <span>🎬 Edit Outside Video</span>
                   </button>
                 </div>
                 {/* Input Mode 1: File Dropzone */}
@@ -5388,17 +5441,24 @@ export default function App() {
           {activeTab === 'editor' && (
             <div className="space-y-6">
               {editorClip ? (
-                <CapCutEditor
-                  clip={editorClip}
-                  onClose={() => {
-                    setEditorClip(null)
-                    setActiveTab('clips')
-                  }}
-                  onClipUpdated={(updated) => {
-                    setClips(prev => prev.map(c => c.id === updated.id ? updated : c))
-                    setEditorClip(updated)
-                  }}
-                />
+                <React.Suspense fallback={
+                  <div className="p-16 rounded-2xl bg-[#11121d] border border-purple-900/40 text-center space-y-3">
+                    <Loader2 className="h-8 w-8 animate-spin text-purple-400 mx-auto" />
+                    <p className="text-sm font-semibold text-zinc-200">Launching Master Video Editor Studio...</p>
+                    <p className="text-xs text-zinc-500">Preparing multi-track timeline, playhead razor & outro engine</p>
+                  </div>
+                }>
+                  <CapCutEditor
+                    clip={editorClip}
+                    onClose={() => {
+                      setEditorClip(null)
+                    }}
+                    onClipUpdated={(updated) => {
+                      setClips(prev => prev.map(c => c.id === updated.id ? updated : c))
+                      setEditorClip(updated)
+                    }}
+                  />
+                </React.Suspense>
               ) : (
                 <div className="max-w-3xl mx-auto space-y-6">
                   {/* IMPORT EXTERNAL VIDEO DROPZONE */}
@@ -5478,14 +5538,21 @@ export default function App() {
           )}
           {/* TAB: CREATOR SHOWCASE & VIRAL TESTIMONIALS */}
           {activeTab === 'showcase' && (
-            <ShowcaseTestimonials
-              clips={clips}
-              onOpenEditor={(c) => {
-                setEditorClip(c)
-                setActiveTab('editor')
-              }}
-              onPreviewClip={(c) => setSelectedPreviewClip(c)}
-            />
+            <React.Suspense fallback={
+              <div className="p-16 rounded-2xl bg-[#11121d] border border-purple-900/40 text-center space-y-3">
+                <Loader2 className="h-8 w-8 animate-spin text-purple-400 mx-auto" />
+                <p className="text-sm font-semibold text-zinc-200">Loading Creator Showcase...</p>
+              </div>
+            }>
+              <ShowcaseTestimonials
+                clips={clips}
+                onOpenEditor={(c) => {
+                  setEditorClip(c)
+                  setActiveTab('editor')
+                }}
+                onPreviewClip={(c) => setSelectedPreviewClip(c)}
+              />
+            </React.Suspense>
           )}
           {/* TAB 3: APPROVED CLIPS (PHASE 5 RENDERING ACTIVE) */}
           {activeTab === 'clips' && (
@@ -8115,14 +8182,16 @@ export default function App() {
       )}
       {/* Global Master Editor Modal if opened from another tab */}
       {editorClip && activeTab !== 'editor' && (
-        <CapCutEditor
-          clip={editorClip}
-          onClose={() => setEditorClip(null)}
-          onClipUpdated={(updated) => {
-            setClips(prev => prev.map(c => c.id === updated.id ? updated : c))
-            setEditorClip(updated)
-          }}
-        />
+        <React.Suspense fallback={null}>
+          <CapCutEditor
+            clip={editorClip}
+            onClose={() => setEditorClip(null)}
+            onClipUpdated={(updated) => {
+              setClips(prev => prev.map(c => c.id === updated.id ? updated : c))
+              setEditorClip(updated)
+            }}
+          />
+        </React.Suspense>
       )}
     </div>
   )

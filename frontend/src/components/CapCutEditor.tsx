@@ -684,7 +684,39 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
         edited_segments: segments
       }
 
-      const res = await fetch(`/api/clips/${clip.id}/render?${queryParams.toString()}`, {
+      let targetClipId = clip.id
+      // If this video was brought from outside and is not yet registered on server
+      if (clip.video_id === 0 && clip.rawBlob) {
+        setRenderProgress(15)
+        setRenderMessage('Master Editor: Uploading outside video to render engine...')
+        const uploadData = new FormData()
+        uploadData.append('file', clip.rawBlob, `${clipTitle.trim() || 'outside_video'}.mp4`)
+        const upRes = await fetch('/api/videos/upload', {
+          method: 'POST',
+          body: uploadData
+        })
+        if (!upRes.ok) throw new Error('Could not upload outside video to server engine')
+        const vidInfo = await upRes.json()
+        const clipRes = await fetch('/api/clips', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            video_id: vidInfo.id,
+            title: clipTitle.trim(),
+            start_time: Math.max(0, trimStart),
+            end_time: Math.max(0.1, trimEnd),
+            aspect_ratio: cleanRatio,
+            caption_style: captionStyle
+          })
+        })
+        if (!clipRes.ok) throw new Error('Could not prepare clip on render engine')
+        const createdClip = await clipRes.json()
+        targetClipId = createdClip.id
+        clip.id = createdClip.id
+        clip.video_id = createdClip.video_id
+      }
+
+      const res = await fetch(`/api/clips/${targetClipId}/render?${queryParams.toString()}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

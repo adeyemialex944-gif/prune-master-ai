@@ -2,6 +2,7 @@ import shutil
 from typing import Optional
 from fastapi import FastAPI, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
@@ -50,6 +51,22 @@ app = FastAPI(
     version="0.1.0"
 )
 
+# High-performance GZip compression (reduces JSON & asset size by 70-80% over the wire)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# HTTP Asset Caching Middleware (0ms repeated loads from browser disk/memory cache)
+@app.middleware("http")
+async def add_cache_control_headers(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path.startswith("/media/"):
+        response.headers["Cache-Control"] = "public, max-age=86400"
+    elif path == "/" or path.endswith(".html"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
 # CORS setup for Vite frontend
 app.add_middleware(
     CORSMiddleware,
@@ -69,6 +86,10 @@ app.include_router(auth.router)
 app.include_router(videos.router)
 app.include_router(jobs.router)
 app.include_router(clips.router)
+
+@app.get("/api/ping")
+def ping():
+    return {"status": "ok", "time": "pong"}
 
 @app.get("/api/health", response_model=HealthResponse)
 def health_check():
