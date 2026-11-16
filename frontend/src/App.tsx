@@ -328,6 +328,10 @@ export default function App() {
   const [isUploadingAvatar, setIsUploadingAvatar] = useState<boolean>(false)
   const [isSavingProfile, setIsSavingProfile] = useState<boolean>(false)
   const [profileToast, setProfileToast] = useState<{ type: 'success' | 'error', text: string } | null>(null)
+
+  // Render Free Tier Wake-Up & Keep-Alive State
+  const [isWakingUpServer, setIsWakingUpServer] = useState<boolean>(false)
+  const [wakeUpSecondsLeft, setWakeUpSecondsLeft] = useState<number>(30)
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false)
   const avatarFileInputRef = useRef<HTMLInputElement | null>(null)
   // Autonomous Prompt-to-Publish Copilot State
@@ -1225,11 +1229,23 @@ export default function App() {
     setIsAuthModalOpen(true)
   }
   useEffect(() => {
-    const initAuthAndData = async () => {
-      // 1. Fast background health check
-      checkHealth()
+    // 1. Detect if Render container is sleeping on cold-start (unresponsive for >2.8s)
+    let isConnected = false
+    const wakeUpTimer = setTimeout(() => {
+      if (!isConnected) {
+        setIsWakingUpServer(true)
+      }
+    }, 2800)
 
-      // 2. Hydrate cached user from localStorage immediately for 0ms initial render
+    const initAuthAndData = async () => {
+      // Background health check
+      checkHealth().then(() => {
+        isConnected = true
+        clearTimeout(wakeUpTimer)
+        setIsWakingUpServer(false)
+      }).catch(() => {})
+
+      // Hydrate cached user from localStorage immediately for 0ms initial render
       const cachedUserStr = localStorage.getItem('prune_master_user')
       if (cachedUserStr) {
         try {
@@ -1245,6 +1261,9 @@ export default function App() {
             headers: { 'Authorization': `Bearer ${savedToken}` }
           })
           if (res.ok) {
+            isConnected = true
+            clearTimeout(wakeUpTimer)
+            setIsWakingUpServer(false)
             const user = await res.json()
             setCurrentUser(user)
             localStorage.setItem('prune_master_user', JSON.stringify(user))
@@ -1276,7 +1295,36 @@ export default function App() {
     }
     initAuthAndData()
     const interval = setInterval(checkHealth, 15000)
-    return () => clearInterval(interval)
+    return () => {
+      clearTimeout(wakeUpTimer)
+      clearInterval(interval)
+    }
+  }, [])
+
+  // 24/7 Render Free-Tier Wake-Up Live Polling & Countdown
+  useEffect(() => {
+    if (!isWakingUpServer) return
+    const timer = setInterval(() => {
+      setWakeUpSecondsLeft(prev => (prev <= 1 ? 1 : prev - 1))
+      // High-speed ping to catch the exact second Render wakes up
+      fetch('/api/ping')
+        .then(res => {
+          if (res.ok) {
+            setIsWakingUpServer(false)
+            setIsBackendOnline(true)
+          }
+        })
+        .catch(() => {})
+    }, 1500)
+    return () => clearInterval(timer)
+  }, [isWakingUpServer])
+
+  // 24/7 In-Tab Keep-Alive Heartbeat: pings /api/ping every 7 minutes to prevent Render free-tier sleep while tab is open
+  useEffect(() => {
+    const keepAliveInterval = setInterval(() => {
+      fetch('/api/ping').catch(() => {})
+    }, 7 * 60 * 1000)
+    return () => clearInterval(keepAliveInterval)
   }, [])
   // Global Escape key handler to cancel/close any open video or modal
   useEffect(() => {
@@ -2218,6 +2266,57 @@ export default function App() {
   const filteredSegments = transcriptData?.segments.filter(seg =>
     seg.text.toLowerCase().includes(transcriptSearch.toLowerCase())
   ) || []
+  // Smart Cold-Start Wake-Up Screen for Render Free Tier
+  if (isWakingUpServer) {
+    const elapsedPct = Math.min(95, Math.round(((30 - wakeUpSecondsLeft) / 30) * 100))
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-[#09090c] text-zinc-300 p-4">
+        <div className="max-w-md w-full p-8 rounded-3xl bg-[#121320] border border-purple-500/40 shadow-2xl text-center space-y-5 animate-in fade-in duration-300">
+          <div className="relative mx-auto w-16 h-16">
+            <div className="h-16 w-16 rounded-2xl bg-gradient-to-tr from-purple-600 via-indigo-600 to-pink-600 flex items-center justify-center text-white shadow-xl shadow-purple-900/50 animate-pulse">
+              <Zap className="h-8 w-8 text-yellow-300" />
+            </div>
+            <Loader2 className="h-8 w-8 animate-spin text-purple-400 absolute -bottom-1 -right-1" />
+          </div>
+
+          <div className="space-y-1.5">
+            <h3 className="text-lg font-bold text-white flex items-center justify-center gap-2">
+              <span>Waking Up Studio Engine</span>
+              <span className="text-[10px] bg-purple-950 text-purple-300 border border-purple-700/60 px-2 py-0.5 rounded-full font-mono font-semibold">
+                Render Cloud
+              </span>
+            </h3>
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              The free-tier cloud container is booting up from sleep mode. This takes ~20–30 seconds on cold start.
+            </p>
+          </div>
+
+          {/* Progress bar with live countdown */}
+          <div className="space-y-2">
+            <div className="w-full bg-[#0a0a10] h-2.5 rounded-full overflow-hidden border border-zinc-800">
+              <div
+                className="bg-gradient-to-r from-purple-500 via-indigo-500 to-amber-400 h-full transition-all duration-1000 ease-linear"
+                style={{ width: `${Math.max(8, elapsedPct)}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-zinc-400 font-mono">
+              <span>Estimated boot: ~{wakeUpSecondsLeft}s</span>
+              <span className="text-purple-300 font-bold">{elapsedPct}%</span>
+            </div>
+          </div>
+
+          <div className="p-3 rounded-xl bg-[#0d0e17] border border-zinc-800/80 text-[11px] text-zinc-400 flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-emerald-400 font-medium">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
+              Auto-connecting...
+            </span>
+            <span className="text-zinc-500 text-[10px]">Pinging every 1.5s</span>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   // Full-Screen Portal for Unauthenticated Users (Protects all director videos and features)
   if (isCheckingAuth) {
     return (
