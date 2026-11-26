@@ -57,6 +57,7 @@ from app.services.render_service import (
     render_vertical_clip
 
 )
+from app.services.grammar_service import polish_transcript_segments
 
 
 
@@ -229,7 +230,7 @@ def run_mine_clips_worker(
 
     lab_mode: str = "sermon",
 
-    framing_mode: str = "blur",
+    framing_mode: str = "smart_face",
 
     min_duration: float = 15.0,
 
@@ -356,9 +357,9 @@ def run_mine_clips_worker(
 
 
 
-        user_gemini_key = video.user.gemini_api_key if video.user and video.user.gemini_api_key else None
+        user_gemini_key = (video.user.gemini_api_key if video.user and video.user.gemini_api_key else None) or os.environ.get("GEMINI_API_KEY")
 
-        preferred_model = video.user.gemini_model if video.user and video.user.gemini_model else "gemini-2.5-pro"
+        preferred_model = (video.user.gemini_model if video.user and video.user.gemini_model else None) or os.environ.get("GEMINI_MODEL") or "gemini-flash-lite-latest"
 
 
 
@@ -938,21 +939,81 @@ def get_transcript(video_id: int, db: Session = Depends(get_db)):
 
 
 
-    if not video.transcript_path or not Path(video.transcript_path).exists():
+    t_path = None
+    if video.transcript_path and Path(video.transcript_path).exists():
+        t_path = Path(video.transcript_path)
+    elif (TRANSCRIPTS_DIR / f"{video.id}_transcript.json").exists():
+        t_path = TRANSCRIPTS_DIR / f"{video.id}_transcript.json"
+        video.transcript_path = str(t_path)
+        db.commit()
+    elif video.transcript_path and (TRANSCRIPTS_DIR / Path(video.transcript_path).name).exists():
+        t_path = TRANSCRIPTS_DIR / Path(video.transcript_path).name
+        video.transcript_path = str(t_path)
+        db.commit()
 
+    if not t_path or not t_path.exists():
         raise HTTPException(status_code=404, detail="Transcript not ready yet")
 
+    try:
+        with open(t_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not read transcript: {e}")
 
+
+
+@router.post("/{video_id}/polish-transcript")
+def polish_video_transcript(video_id: int, db: Session = Depends(get_db)):
+    """
+    Polishes the entire video transcript on disk using English grammar,
+    syntax, capitalization, and proper-noun normalization while strictly
+    preserving all word-level timestamps.
+    """
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    t_path = None
+    if video.transcript_path and Path(video.transcript_path).exists():
+        t_path = Path(video.transcript_path)
+    elif (TRANSCRIPTS_DIR / f"{video.id}_transcript.json").exists():
+        t_path = TRANSCRIPTS_DIR / f"{video.id}_transcript.json"
+        video.transcript_path = str(t_path)
+        db.commit()
+    elif video.transcript_path and (TRANSCRIPTS_DIR / Path(video.transcript_path).name).exists():
+        t_path = TRANSCRIPTS_DIR / Path(video.transcript_path).name
+        video.transcript_path = str(t_path)
+        db.commit()
+
+    if not t_path or not t_path.exists():
+        raise HTTPException(status_code=404, detail="Transcript file does not exist yet")
 
     try:
+        with open(t_path, "r", encoding="utf-8") as f:
+            tdata = json.load(f)
 
-        with open(video.transcript_path, "r", encoding="utf-8") as f:
+        orig_segs = tdata.get("segments", [])
+        if not orig_segs:
+            return {"video_id": video_id, "message": "No segments to polish in transcript."}
 
-            return json.load(f)
+        polished_segs, stats = polish_transcript_segments(orig_segs)
+        tdata["segments"] = polished_segs
 
+        with open(t_path, "w", encoding="utf-8") as f:
+            json.dump(tdata, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"Video {video_id} transcript saved with {stats['corrections_made']} grammar corrections.")
+        return {
+            "video_id": video_id,
+            "status": "success",
+            "segments_count": stats["segments_count"],
+            "words_count": stats["words_count"],
+            "corrections_made": stats["corrections_made"],
+            "message": f"Polished {stats['segments_count']} transcript segments ({stats['corrections_made']} corrections applied)."
+        }
     except Exception as e:
-
-        raise HTTPException(status_code=500, detail=f"Could not read transcript: {e}")
+        logger.error(f"Failed to polish transcript for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to polish transcript: {e}")
 
 
 
@@ -1465,9 +1526,9 @@ def get_video_key_highlights(
 
 
 
-    user_gemini_key = video.user.gemini_api_key if video.user and video.user.gemini_api_key else None
+    user_gemini_key = (video.user.gemini_api_key if video.user and video.user.gemini_api_key else None) or os.environ.get("GEMINI_API_KEY")
 
-    preferred_model = video.user.gemini_model if video.user and video.user.gemini_model else "gemini-2.5-pro"
+    preferred_model = (video.user.gemini_model if video.user and video.user.gemini_model else None) or os.environ.get("GEMINI_MODEL") or "gemini-flash-lite-latest"
 
 
 
@@ -1558,8 +1619,8 @@ def run_analyze_video_worker(
         job.message = f"AI discovering high-impact moments ({int(min_duration)}s-{int(max_duration)}s in {lab_mode.capitalize()} mode)..."
         db.commit()
 
-        user_gemini_key = video.user.gemini_api_key if video.user and video.user.gemini_api_key else None
-        preferred_model = video.user.gemini_model if video.user and video.user.gemini_model else "gemini-2.5-pro"
+        user_gemini_key = (video.user.gemini_api_key if video.user and video.user.gemini_api_key else None) or os.environ.get("GEMINI_API_KEY")
+        preferred_model = (video.user.gemini_model if video.user and video.user.gemini_model else None) or os.environ.get("GEMINI_MODEL") or "gemini-flash-lite-latest"
 
         candidates = extract_video_highlights(
             tdata,
@@ -1618,8 +1679,8 @@ def analyze_video_moments(
     if t_file.exists():
         with open(t_file, "r", encoding="utf-8") as f:
             tdata = json.load(f)
-        user_gemini_key = video.user.gemini_api_key if video.user and video.user.gemini_api_key else None
-        preferred_model = video.user.gemini_model if video.user and video.user.gemini_model else "gemini-2.5-pro"
+        user_gemini_key = (video.user.gemini_api_key if video.user and video.user.gemini_api_key else None) or os.environ.get("GEMINI_API_KEY")
+        preferred_model = (video.user.gemini_model if video.user and video.user.gemini_model else None) or os.environ.get("GEMINI_MODEL") or "gemini-flash-lite-latest"
 
         highlights = extract_video_highlights(
             tdata,

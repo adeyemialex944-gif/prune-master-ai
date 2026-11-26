@@ -325,7 +325,7 @@ def get_user_trial_status(
                 "max_trials": 9999,
                 "client_ip": client_ip,
                 "avatar_url": current_user.avatar_url,
-                "gemini_model": current_user.gemini_model or "gemini-2.5-pro"
+                "gemini_model": current_user.gemini_model or "gemini-flash-lite-latest"
             }
         return {
             "is_logged_in": False,
@@ -340,7 +340,7 @@ def get_user_trial_status(
             "max_trials": 9999,
             "client_ip": client_ip,
             "avatar_url": None,
-            "gemini_model": "gemini-2.5-pro"
+            "gemini_model": "gemini-flash-lite-latest"
         }
 
     # Monetization IS active -> enforce trial limits
@@ -359,7 +359,7 @@ def get_user_trial_status(
             "max_trials": 10,
             "client_ip": client_ip,
             "avatar_url": current_user.avatar_url,
-            "gemini_model": current_user.gemini_model or "gemini-2.5-pro"
+            "gemini_model": current_user.gemini_model or "gemini-flash-lite-latest"
         }
     # Guest / IP-based
     record = db.query(IPTrialRecord).filter(IPTrialRecord.ip_address == client_ip).first()
@@ -377,7 +377,7 @@ def get_user_trial_status(
             "max_trials": 9999,
             "client_ip": client_ip,
             "avatar_url": None,
-            "gemini_model": "gemini-2.5-pro"
+            "gemini_model": "gemini-flash-lite-latest"
         }
     trials_used = record.trials_used if record else 0
     max_trials = 10
@@ -395,7 +395,7 @@ def get_user_trial_status(
         "max_trials": max_trials,
         "client_ip": client_ip,
         "avatar_url": None,
-        "gemini_model": "gemini-2.5-pro"
+        "gemini_model": "gemini-flash-lite-latest"
     }
 
 # =============================================================================
@@ -432,7 +432,7 @@ def list_users_for_director(
             "trial_credits_used": u.trial_credits_used or 0,
             "registration_ip": u.registration_ip,
             "last_ip": u.last_ip,
-            "gemini_model": u.gemini_model or "gemini-2.5-pro",
+            "gemini_model": u.gemini_model or "gemini-flash-lite-latest",
             "created_at": u.created_at.isoformat() if u.created_at else None,
             "last_login": u.last_login.isoformat() if u.last_login else None,
             "video_count": v_count,

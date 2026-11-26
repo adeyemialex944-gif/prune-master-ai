@@ -146,6 +146,7 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
   const [captionStyle, setCaptionStyle] = useState<string>(clip.caption_style || 'dark_crisp')
   const [framingMode, setFramingMode] = useState<'smart_face' | 'blur' | 'crop'>('smart_face')
   const [resolution, setResolution] = useState<'4k' | '1080p' | '720p' | '480p'>('1080p')
+  const [videoQuality, setVideoQuality] = useState<'ultra' | 'high' | 'balanced'>('high')
   const [burnCaptions, setBurnCaptions] = useState<boolean>(true)
 
   // 5 Master Editor Sidebar Tabs:
@@ -186,8 +187,162 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
   const [bgMusic, setBgMusic] = useState<string>(clip.bg_music || 'none')
   const [bgMusicVolume, setBgMusicVolume] = useState<number>(clip.bg_music_volume ? Math.round(clip.bg_music_volume * 100) : 25)
   const [transition, setTransition] = useState<string>(clip.transition || 'none')
-  const [watermark, setWatermark] = useState<boolean>(false)
-  const [watermarkText, setWatermarkText] = useState<string>('')
+
+  // Check if user is on Free Tier (defaults to true for non-logged-in / standard users, false for Director or Pro VIP)
+  const isFreeTierUser = (() => {
+    try {
+      const raw = localStorage.getItem('prune_master_user') || localStorage.getItem('clipmaster_user')
+      if (raw) {
+        const u = JSON.parse(raw)
+        if (u.role === 'director' || u.is_pro) return false
+      }
+    } catch (_) {}
+    return true
+  })()
+
+  // Free Tier defaults to platform watermark; Pro users get clean watermark-free exports
+  const [watermark, setWatermark] = useState<boolean>(() => isFreeTierUser)
+  const [watermarkText, setWatermarkText] = useState<string>(isFreeTierUser ? 'ClipMaster AI' : '')
+
+  // Horizontal video framing & face tracking state (0 = left, 50 = center, 100 = right)
+  const [videoCropX, setVideoCropX] = useState<number>(50)
+  const [hasManualCropped, setHasManualCropped] = useState<boolean>(false)
+  const [keyframeCrops, setKeyframeCrops] = useState<Array<{ t: number; crop_x_percent: number }>>([])
+  const [isAutoDetectingFace, setIsAutoDetectingFace] = useState<boolean>(false)
+  const [isPolishingGrammar, setIsPolishingGrammar] = useState<boolean>(false)
+
+  // Auto-detect speaker face coordinates via backend multi-cascade AI
+  const handleDetectSpeakerFace = async () => {
+    if (!clip?.id || clip.video_id === 0) {
+      showToast('⚠️ No server-side video clip available for auto-detection')
+      return
+    }
+    setIsAutoDetectingFace(true)
+    showToast('🔍 AI scanning speaker face, lip motion & movement trajectory...')
+    try {
+      const res = await fetch(`/api/clips/${clip.id}/detect-face`)
+      if (res.ok) {
+        const data = await res.json()
+        if (typeof data.crop_x_percent === 'number') {
+          const rounded = Math.round(data.crop_x_percent)
+          setVideoCropX(rounded)
+          setHasManualCropped(false)
+          if (Array.isArray(data.keyframe_crops)) {
+            setKeyframeCrops(data.keyframe_crops)
+          }
+          showToast(`🎯 Speaker centered at ${rounded}% (${data.mode || 'smart_center'})`)
+        }
+      } else {
+        showToast('⚠️ Face detection completed with default center framing')
+      }
+    } catch (err) {
+      console.warn('Face detection call error:', err)
+      showToast('⚠️ Could not run face detection')
+    } finally {
+      setIsAutoDetectingFace(false)
+    }
+  }
+
+  // Initial automatic face detection check on clip mount
+  useEffect(() => {
+    if (!clip?.id || clip.video_id === 0) return
+    let isMounted = true
+    const checkInitialFace = async () => {
+      try {
+        const res = await fetch(`/api/clips/${clip.id}/detect-face`)
+        if (res.ok) {
+          const data = await res.json()
+          if (isMounted && typeof data.crop_x_percent === 'number') {
+            setVideoCropX(Math.round(data.crop_x_percent))
+            if (Array.isArray(data.keyframe_crops)) {
+              setKeyframeCrops(data.keyframe_crops)
+            }
+          }
+        }
+      } catch (e) {
+        // quiet ignore on background initial check
+      }
+    }
+    checkInitialFace()
+    return () => { isMounted = false }
+  }, [clip.id])
+
+  // Polish English Grammar, Syntax, Punctuation & Proper Nouns
+  const handlePolishGrammar = async () => {
+    if (!segments || segments.length === 0) {
+      showToast('⚠️ No transcript segments available to polish')
+      return
+    }
+
+    setIsPolishingGrammar(true)
+    playSoundEffect('bell')
+    showToast('🪄 AI polishing English grammar, syntax & punctuation...')
+
+    try {
+      if (clip?.id && clip.video_id !== 0) {
+        const res = await fetch(`/api/clips/${clip.id}/polish-grammar`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ segments })
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (Array.isArray(data.segments) && data.segments.length > 0) {
+            setSegments(data.segments)
+            playSoundEffect('pop')
+            showToast(`🎉 Grammar Polished! ${data.corrections_made || 0} corrections applied.`)
+            return
+          }
+        }
+      }
+
+      // Offline / Client-Side Grammar Normalization Fallback
+      const polished = segments.map(seg => {
+        let t = seg.text
+        t = t.replace(/\bi\b/g, 'I')
+             .replace(/\bi'm\b/gi, "I'm")
+             .replace(/\bdont\b/gi, "don't")
+             .replace(/\bcant\b/gi, "can't")
+             .replace(/\bwont\b/gi, "won't")
+             .replace(/\bdidnt\b/gi, "didn't")
+             .replace(/\bdoesnt\b/gi, "doesn't")
+             .replace(/\bisnt\b/gi, "isn't")
+             .replace(/\barent\b/gi, "aren't")
+             .replace(/\bwasnt\b/gi, "wasn't")
+             .replace(/\bwerent\b/gi, "weren't")
+             .replace(/\byoure\b/gi, "you're")
+             .replace(/\btheyre\b/gi, "they're")
+             .replace(/\bthats\b/gi, "that's")
+             .replace(/\bwhats\b/gi, "what's")
+             .replace(/\bcould\s+of\b/gi, 'could have')
+             .replace(/\bwould\s+of\b/gi, 'would have')
+             .replace(/\bshould\s+of\b/gi, 'should have')
+             .replace(/\bis\s+suppose\s+to\b/gi, 'is supposed to')
+             .replace(/\bgod\b/gi, 'God')
+             .replace(/\bjesus\b/gi, 'Jesus')
+             .replace(/\bchrist\b/gi, 'Christ')
+             .replace(/\bbible\b/gi, 'Bible')
+             .replace(/\bbayobob\b/gi, 'baobab')
+             .replace(/\bzalumi\b/gi, 'Zalumi')
+             .replace(/\bketo\b/gi, 'Keto')
+             .replace(/\bleyla\b/gi, 'Leyla')
+             .replace(/\btommy\b/gi, 'Tommy')
+             .replace(/\b(the|to|and|you|in|of|that|is|it|we)\s+\1\b/gi, '$1')
+
+        // Fix sentence capitalization
+        t = t.replace(/(^\s*|[.?!]\s+)([a-z])/g, (_, p1, p2) => p1 + p2.toUpperCase())
+        return { ...seg, text: t }
+      })
+      setSegments(polished)
+      playSoundEffect('pop')
+      showToast('🎉 English grammar & proper nouns polished!')
+    } catch (err) {
+      console.error('Error polishing grammar:', err)
+      showToast('⚠️ Could not complete grammar polish')
+    } finally {
+      setIsPolishingGrammar(false)
+    }
+  }
 
   // AI Voiceover (TTS) & Mic Voiceover State
   const [ttsScript, setTtsScript] = useState<string>('')
@@ -280,8 +435,8 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
     setBgMusic(clip.bg_music || 'none')
     setBgMusicVolume(clip.bg_music_volume ? Math.round(clip.bg_music_volume * 100) : 25)
     setTransition(clip.transition || 'none')
-    setWatermark(false)
-    setWatermarkText('')
+    setWatermark(isFreeTierUser)
+    setWatermarkText(isFreeTierUser ? 'ClipMaster AI' : '')
     setRenderError(null)
     setRenderSuccess(false)
     setVideoCacheBuster(Date.now())
@@ -756,25 +911,33 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
     const prevPaused = video.paused
 
     try {
-      // 1. Determine target canvas dimensions based on aspectRatio
-      let outWidth = 720
-      let outHeight = 1280
+      // 1. Determine target canvas dimensions dynamically based on selected resolution & aspectRatio
+      let outWidth = 1080
+      let outHeight = 1920
       if (aspectRatio === '16:9') {
-        outWidth = 1280
-        outHeight = 720
+        outWidth = resolution === '4k' ? 3840 : (resolution === '720p' ? 1280 : (resolution === '480p' ? 854 : 1920))
+        outHeight = resolution === '4k' ? 2160 : (resolution === '720p' ? 720 : (resolution === '480p' ? 480 : 1080))
       } else if (aspectRatio === '1:1') {
-        outWidth = 720
-        outHeight = 720
+        outWidth = resolution === '4k' ? 2160 : (resolution === '720p' ? 720 : (resolution === '480p' ? 480 : 1080))
+        outHeight = outWidth
+      } else {
+        // 9:16 Vertical
+        outWidth = resolution === '4k' ? 2160 : (resolution === '720p' ? 720 : (resolution === '480p' ? 480 : 1080))
+        outHeight = resolution === '4k' ? 3840 : (resolution === '720p' ? 1280 : (resolution === '480p' ? 854 : 1920))
       }
 
       const canvas = document.createElement('canvas')
       canvas.width = outWidth
       canvas.height = outHeight
-      const ctx = canvas.getContext('2d')
+      const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })
       if (!ctx) throw new Error('Could not initialize 2D canvas context')
 
-      // 2. Setup video stream and audio tracks
-      const canvasStream = canvas.captureStream(30)
+      // Enable high-fidelity image smoothing
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = 'high'
+
+      // 2. Setup video stream (up to 60fps for silky smooth motion) and audio tracks
+      const canvasStream = canvas.captureStream(60)
       
       let audioTracks: MediaStreamTrack[] = []
       try {
@@ -792,6 +955,7 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
 
       // 3. Choose best supported MIME type
       const supportedMimes = [
+        'video/mp4;codecs=avc1.640028,mp4a.40.2',
         'video/mp4;codecs=avc1,mp4a.40.2',
         'video/mp4',
         'video/webm;codecs=vp9,opus',
@@ -806,11 +970,23 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
         }
       }
 
+      // High-Fidelity Bitrate Calculation (16-36 Mbps eliminates compression artifacts!)
+      let targetBitrate = 16_000_000
+      if (resolution === '4k') {
+        targetBitrate = videoQuality === 'ultra' ? 36_000_000 : 26_000_000
+      } else if (resolution === '1080p') {
+        targetBitrate = videoQuality === 'ultra' ? 22_000_000 : (videoQuality === 'balanced' ? 9_000_000 : 16_000_000)
+      } else if (resolution === '720p') {
+        targetBitrate = videoQuality === 'ultra' ? 12_000_000 : 8_000_000
+      } else {
+        targetBitrate = 4_000_000
+      }
+
       const isMp4 = selectedMime.includes('mp4')
       const recordedChunks: Blob[] = []
       const recorder = new MediaRecorder(combinedStream, {
         mimeType: selectedMime,
-        videoBitsPerSecond: 4_000_000
+        videoBitsPerSecond: targetBitrate
       })
 
       recorder.ondataavailable = (e) => {
@@ -871,7 +1047,19 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
             const scale = Math.max(outWidth / vw, outHeight / vh)
             const dw = vw * scale
             const dh = vh * scale
-            const dx = (outWidth - dw) / 2
+
+            // Dynamic camera tracking trajectory or user manual crop
+            let activePct = videoCropX
+            if (framingMode === 'smart_face' && keyframeCrops && keyframeCrops.length > 0) {
+              const relSec = Math.max(0, currentT - trimStart)
+              const match = keyframeCrops.filter(k => k.t <= relSec).slice(-1)[0] || keyframeCrops[0]
+              if (match && typeof match.crop_x_percent === 'number') {
+                activePct = match.crop_x_percent
+              }
+            }
+            // Exact horizontal framing factor matching preview (0% = left, 50% = center, 100% = right)
+            const cropFactor = Math.max(0, Math.min(1, activePct / 100))
+            const dx = (outWidth - dw) * cropFactor
             const dy = (outHeight - dh) / 2
             ctx.drawImage(video, dx, dy, dw, dh)
           } else {
@@ -992,7 +1180,54 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
             }
           }
 
-          // Watermark is completely disabled / removed from exported video
+          // Watermark drawing: Applied for Free Tier users or when explicitly enabled
+          const shouldApplyWatermark = isFreeTierUser ? true : watermark
+          if (shouldApplyWatermark) {
+            ctx.save()
+            const wmText = (watermarkText || 'ClipMaster AI').trim() || 'ClipMaster AI'
+            const wmFontSize = Math.max(14, Math.round(18 * (outHeight / 1080)))
+            ctx.font = `bold ${wmFontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`
+
+            const metrics = ctx.measureText(wmText)
+            const pillPadX = Math.round(10 * (outWidth / 1080))
+            const pillPadY = Math.round(6 * (outHeight / 1080))
+            const pillW = metrics.width + pillPadX * 2 + 18
+            const pillH = wmFontSize + pillPadY * 2
+
+            // Bottom-right placement
+            const pillX = outWidth - pillW - Math.round(20 * (outWidth / 1080))
+            const pillY = outHeight - pillH - Math.round(24 * (outHeight / 1080))
+
+            // Dark translucent pill background
+            ctx.fillStyle = 'rgba(10, 12, 20, 0.70)'
+            ctx.beginPath()
+            if (typeof (ctx as any).roundRect === 'function') {
+              (ctx as any).roundRect(pillX, pillY, pillW, pillH, 6)
+            } else {
+              ctx.rect(pillX, pillY, pillW, pillH)
+            }
+            ctx.fill()
+
+            // Subtle border
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)'
+            ctx.lineWidth = 1
+            ctx.stroke()
+
+            // Accent dot
+            ctx.fillStyle = '#a855f7'
+            ctx.beginPath()
+            ctx.arc(pillX + pillPadX + 4, pillY + pillH / 2, 3, 0, Math.PI * 2)
+            ctx.fill()
+
+            // Watermark Text
+            ctx.textAlign = 'left'
+            ctx.textBaseline = 'middle'
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.90)'
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.8)'
+            ctx.shadowBlur = 4
+            ctx.fillText(wmText, pillX + pillPadX + 14, pillY + pillH / 2)
+            ctx.restore()
+          }
 
           // Draw Custom Overlays & Animated Outros
           const activeOverlays = customOverlays.filter(o => !o.erased && currentT >= o.start_time && currentT <= o.end_time)
@@ -1132,6 +1367,11 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
 
     try {
       const cleanRatio = parseAspectRatio(aspectRatio)
+      const effectiveWatermark = isFreeTierUser ? true : watermark
+      const effectiveWatermarkText = effectiveWatermark ? (watermarkText.trim() || 'ClipMaster AI') : ''
+
+      const effectiveCropX = (framingMode === 'smart_face' && !hasManualCropped) ? undefined : videoCropX
+
       const queryParams = new URLSearchParams({
         framing_mode: framingMode,
         burn_captions: burnCaptions.toString(),
@@ -1146,11 +1386,13 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
         volume_level: (volumeLevel / 100).toString(),
         vocal_boost: vocalBoost.toString(),
         remove_silence: removeSilence.toString(),
-        watermark: 'false',
-        watermark_text: '',
+        watermark: effectiveWatermark.toString(),
+        watermark_text: effectiveWatermarkText,
         transition: transition,
         bg_music: bgMusic,
-        bg_music_volume: (bgMusicVolume / 100).toString()
+        bg_music_volume: (bgMusicVolume / 100).toString(),
+        ...(effectiveCropX !== undefined ? { crop_x_percent: effectiveCropX.toString() } : {}),
+        video_quality: videoQuality
       })
 
       const renderPayload = {
@@ -1167,11 +1409,13 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
         volume_level: volumeLevel / 100,
         vocal_boost: vocalBoost,
         remove_silence: removeSilence,
-        watermark: false,
-        watermark_text: '',
+        watermark: effectiveWatermark,
+        watermark_text: effectiveWatermarkText,
         transition: transition,
         bg_music: bgMusic,
         bg_music_volume: bgMusicVolume / 100,
+        crop_x_percent: effectiveCropX,
+        video_quality: videoQuality,
         overlays: customOverlays.filter(o => !o.erased),
         edited_segments: segments
       }
@@ -1738,6 +1982,9 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                   onClick={togglePlay}
                   loop={isLooping}
                   className="w-full h-full object-cover cursor-pointer"
+                  style={{
+                    objectPosition: aspectRatio === '9:16' ? `${videoCropX}% center` : 'center center'
+                  }}
                 />
               ) : (
                 <div className="flex flex-col items-center justify-center p-6 text-center text-zinc-500 space-y-2">
@@ -2233,6 +2480,25 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                 {aspectRatio === '9:16' ? '📱 9:16' : aspectRatio === '1:1' ? '🔳 1:1' : '🖥️ 16:9'}
               </div>
 
+              {/* Downlayer Quick Burn Captions Toggle Icon */}
+              <button
+                type="button"
+                onClick={() => {
+                  playSoundEffect('pop')
+                  setBurnCaptions(!burnCaptions)
+                }}
+                className={`absolute bottom-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-md backdrop-blur-md text-[11px] font-semibold border transition-all cursor-pointer z-40 shadow-md ${
+                  burnCaptions
+                    ? 'bg-purple-950/85 text-purple-200 border-purple-500/60 hover:bg-purple-900/90'
+                    : 'bg-black/80 text-zinc-400 border-zinc-700 hover:text-white hover:border-zinc-500'
+                }`}
+                title={burnCaptions ? "Burn Text is ON. Click to turn OFF burning text in video" : "Burn Text is OFF. Click to turn ON burning text in video"}
+              >
+                <Type className={`h-3.5 w-3.5 ${burnCaptions ? 'text-purple-400' : 'text-zinc-500'}`} />
+                <span className="font-mono text-[10px] sm:text-[11px]">{burnCaptions ? 'Burn Text: ON' : 'Burn Text: OFF'}</span>
+                <span className={`w-1.5 h-1.5 rounded-full ${burnCaptions ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-500'}`} />
+              </button>
+
               {/* Live Timecode Overlay */}
               <div className="absolute bottom-3 right-3 px-2 py-0.5 rounded-md bg-black/70 backdrop-blur-md text-[10px] font-mono text-zinc-300 border border-zinc-700 pointer-events-none">
                 {formatTimecode(currentTime)} / {formatTimecode(duration)}
@@ -2287,8 +2553,26 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
               </div>
             </div>
 
-            {/* Right transport tools: Loop, Mute */}
+            {/* Right transport tools: Burn Text Quick Switch, Loop, Mute */}
             <div className="flex items-center gap-2 sm:gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  playSoundEffect('pop')
+                  setBurnCaptions(!burnCaptions)
+                }}
+                className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg border font-bold transition-all cursor-pointer shadow-sm select-none ${
+                  burnCaptions
+                    ? 'bg-purple-950/90 border-purple-500 text-purple-200 hover:bg-purple-900 shadow-purple-950/50'
+                    : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500'
+                }`}
+                title={burnCaptions ? "Burn Captions ON: Click to turn OFF burn text in video" : "Burn Captions OFF: Click to turn ON burn text in video"}
+              >
+                <Type className={`h-3.5 w-3.5 ${burnCaptions ? 'text-purple-400' : 'text-zinc-500'}`} />
+                <span className="font-mono text-[11px] hidden sm:inline">{burnCaptions ? 'Burn Text: ON' : 'Burn Text: OFF'}</span>
+                <span className={`w-2 h-2 rounded-full ${burnCaptions ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'}`} />
+              </button>
+
               <button
                 onClick={() => setIsLooping(!isLooping)}
                 className={`flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors ${
@@ -2376,6 +2660,25 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                     <span>Reset</span>
                   </button>
                 )}
+
+                {/* Burn Text Fast Toggle */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    playSoundEffect('pop')
+                    setBurnCaptions(!burnCaptions)
+                  }}
+                  className={`px-2.5 py-1.5 rounded-lg border font-medium flex items-center gap-1.5 cursor-pointer transition-colors shadow-sm ${
+                    burnCaptions
+                      ? 'bg-purple-950/70 border-purple-600/60 text-purple-200 hover:bg-purple-900/80'
+                      : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:text-zinc-200'
+                  }`}
+                  title={burnCaptions ? "Burn Text is ON. Click to turn OFF subtitle burning." : "Burn Text is OFF. Click to re-enable subtitle burning."}
+                >
+                  <Type className={`h-3.5 w-3.5 ${burnCaptions ? 'text-purple-400' : 'text-zinc-500'}`} />
+                  <span>{burnCaptions ? 'Burn Text: ON' : 'Burn Text: OFF'}</span>
+                  <span className={`w-2 h-2 rounded-full ${burnCaptions ? 'bg-emerald-400' : 'bg-zinc-500'}`} />
+                </button>
               </div>
 
               <div className="flex items-center gap-2">
@@ -2516,10 +2819,25 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                   seekTo(ratio * duration)
                 }}
               >
-                <div className="absolute left-1.5 top-1.5 text-[9px] font-bold text-zinc-300 uppercase tracking-wider z-20 pointer-events-none flex items-center gap-1 bg-black/70 px-1.5 py-0.5 rounded border border-zinc-800">
-                  <Type className="h-2.5 w-2.5 text-cyan-400" />
-                  <span>Captions</span>
-                </div>
+                {/* Track Label with one-click Burn Text toggle */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    playSoundEffect('pop')
+                    setBurnCaptions(!burnCaptions)
+                  }}
+                  className={`absolute left-1.5 top-1.5 text-[9px] font-bold uppercase tracking-wider z-20 flex items-center gap-1 px-1.5 py-0.5 rounded border transition-all cursor-pointer shadow-sm ${
+                    burnCaptions
+                      ? 'bg-purple-950/90 text-purple-200 border-purple-500/60 hover:bg-purple-900'
+                      : 'bg-black/90 text-zinc-400 border-zinc-700 hover:text-zinc-200 line-through opacity-70'
+                  }`}
+                  title={burnCaptions ? "Captions burn active. Click to turn off burn text" : "Captions burn OFF. Click to turn on burn text"}
+                >
+                  <Type className={`h-2.5 w-2.5 ${burnCaptions ? 'text-cyan-400' : 'text-zinc-500'}`} />
+                  <span>{burnCaptions ? 'Captions: ON' : 'Captions: OFF'}</span>
+                  <span className={`w-1.5 h-1.5 rounded-full ${burnCaptions ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'}`} />
+                </button>
 
                 {/* Custom Text Overlay Blocks */}
                 {customOverlays.map((ov) => {
@@ -2719,6 +3037,20 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                   >
                     <Sparkles className="h-3.5 w-3.5 text-yellow-300 animate-pulse" />
                     <span>⚡ Auto-Generate Captions</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePolishGrammar}
+                    disabled={isPolishingGrammar || segments.length === 0}
+                    className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-emerald-950/40 cursor-pointer active:scale-95 transition-all disabled:opacity-50"
+                    title="AI Grammar Polish: Fix syntax errors, capitalization, repeated words, and biblical proper nouns while preserving word timestamps"
+                  >
+                    {isPolishingGrammar ? (
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5 text-yellow-300" />
+                    )}
+                    <span>🪄 Polish English Grammar (AI)</span>
                   </button>
                   <div className="text-[11px] text-zinc-300">
                     <span className="text-purple-300 font-semibold">{segments.length} word cues</span> synchronized
@@ -3993,6 +4325,106 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                 </div>
               </div>
 
+              {/* Horizontal Face Framing & Positioning */}
+              {aspectRatio === '9:16' && (
+                <div className="space-y-3 p-3.5 rounded-xl bg-[#12131f] border border-[#222436] shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-bold text-zinc-200 block">Speaker Framing (Horizontal)</span>
+                      <span className="text-[10px] text-zinc-400">Position speaker face inside 9:16 frame</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                        framingMode === 'smart_face' && !hasManualCropped
+                          ? 'bg-emerald-950/70 text-emerald-300 border-emerald-700'
+                          : 'bg-purple-950/70 text-purple-300 border-purple-800'
+                      }`}>
+                        {framingMode === 'smart_face' && !hasManualCropped ? '🤖 AI Auto-Track' : 'Manual'}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-bold bg-purple-950/70 text-purple-300 border border-purple-800">
+                        {videoCropX}%
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Auto Detect Button */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFramingMode('smart_face')
+                      setHasManualCropped(false)
+                      handleDetectSpeakerFace()
+                    }}
+                    disabled={isAutoDetectingFace}
+                    className="w-full py-2 px-3 rounded-lg bg-gradient-to-r from-purple-700 to-indigo-700 hover:from-purple-600 hover:to-indigo-600 text-white text-xs font-semibold flex items-center justify-center gap-1.5 shadow transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {isAutoDetectingFace ? (
+                      <>
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        <span>AI Scanning Face & Movement Trajectory...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="h-3.5 w-3.5 text-amber-300" />
+                        <span>🎯 Auto-Track Speaker (AI Dynamic Face Centering)</span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* Preset Framing Buttons */}
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => { setVideoCropX(28); setHasManualCropped(true); showToast('Framing: Left 28%') }}
+                      className={`py-1.5 px-2 rounded-lg text-[11px] font-medium border transition-all cursor-pointer ${
+                        videoCropX === 28 ? 'bg-purple-900/60 border-purple-500 text-purple-200 font-bold' : 'bg-[#181926] border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      ⬅️ Left 28%
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setVideoCropX(50); setHasManualCropped(true); showToast('Framing: Center 50%') }}
+                      className={`py-1.5 px-2 rounded-lg text-[11px] font-medium border transition-all cursor-pointer ${
+                        videoCropX === 50 ? 'bg-purple-900/60 border-purple-500 text-purple-200 font-bold' : 'bg-[#181926] border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      🎯 Center 50%
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setVideoCropX(72); setHasManualCropped(true); showToast('Framing: Right 72%') }}
+                      className={`py-1.5 px-2 rounded-lg text-[11px] font-medium border transition-all cursor-pointer ${
+                        videoCropX === 72 ? 'bg-purple-900/60 border-purple-500 text-purple-200 font-bold' : 'bg-[#181926] border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      ➡️ Right 72%
+                    </button>
+                  </div>
+
+                  {/* Range Slider */}
+                  <div className="space-y-1">
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={videoCropX}
+                      onChange={(e) => {
+                        setVideoCropX(Number(e.target.value))
+                        setHasManualCropped(true)
+                      }}
+                      className="w-full accent-purple-500 cursor-pointer h-1.5 bg-zinc-800 rounded-lg"
+                    />
+                    <div className="flex justify-between text-[9px] text-zinc-500 font-mono">
+                      <span>0% (Left)</span>
+                      <span>50% (Center)</span>
+                      <span>100% (Right)</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Cut Transitions */}
               <div className="space-y-2">
                 <label className="text-xs font-bold text-zinc-200 flex items-center justify-between">
@@ -4276,34 +4708,115 @@ export function CapCutEditor({ clip, onClose, onClipUpdated }: CapCutEditorProps
                 </div>
               </div>
 
+              {/* Video Quality Engine & Bitrate Settings */}
+              <div className="space-y-2.5 p-3.5 rounded-xl bg-[#12131f] border border-[#222436]">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="text-xs font-bold text-zinc-200 block">Video Quality & Bitrate Engine</label>
+                    <span className="text-[10px] text-zinc-400">Controls CRF quantization, sharpness & encoding bitrate</span>
+                  </div>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-800">
+                    {videoQuality === 'ultra' ? '💎 Ultra Studio' : (videoQuality === 'high' ? '⚡ High (CRF 18)' : '⚖️ Balanced')}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-xs">
+                  {[
+                    { id: 'ultra', label: '💎 Ultra Studio', sub: 'CRF 16 • Max Detail', desc: 'Virtually lossless' },
+                    { id: 'high', label: '⚡ High Quality', sub: 'CRF 18 • Recommended', desc: 'Crisp & vibrant' },
+                    { id: 'balanced', label: '⚖️ Balanced', sub: 'CRF 22 • Light File', desc: 'Fast export' }
+                  ].map((q) => (
+                    <button
+                      key={q.id}
+                      type="button"
+                      onClick={() => {
+                        setVideoQuality(q.id as any)
+                        playSoundEffect('pop')
+                        showToast(`Quality set to: ${q.label}`)
+                      }}
+                      className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer flex flex-col items-center justify-center ${
+                        videoQuality === q.id
+                          ? 'bg-gradient-to-b from-purple-950/90 to-[#1b1429] border-purple-500 text-purple-200 font-bold shadow-lg shadow-purple-950/40 ring-1 ring-purple-500/50'
+                          : 'bg-[#0d0e17] border-[#1e202f] text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
+                      }`}
+                    >
+                      <span className="text-xs font-bold block mb-0.5">{q.label}</span>
+                      <span className="text-[9px] text-zinc-400 font-mono block">{q.sub}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Live Specification Readout Badge */}
+                <div className="p-2 rounded-lg bg-black/40 border border-zinc-800/80 flex items-center justify-between text-[10px] text-zinc-400">
+                  <div className="flex items-center gap-1.5 font-mono">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>
+                      {resolution.toUpperCase()} ({resolution === '4k' ? '3840x2160' : (resolution === '1080p' ? '1080x1920' : (resolution === '720p' ? '720x1280' : '480x854'))})
+                    </span>
+                  </div>
+                  <span className="font-mono text-purple-300">
+                    {resolution === '4k'
+                      ? (videoQuality === 'ultra' ? '36 Mbps • 60 FPS' : '26 Mbps • 60 FPS')
+                      : resolution === '1080p'
+                      ? (videoQuality === 'ultra' ? '22 Mbps • 60 FPS' : (videoQuality === 'high' ? '16 Mbps • 60 FPS' : '9 Mbps • 30 FPS'))
+                      : '10 Mbps • 30 FPS'}
+                  </span>
+                </div>
+              </div>
+
               {/* Watermark Controls */}
               <div className="p-3.5 rounded-xl bg-[#12131f] border border-[#222436] space-y-2.5">
                 <div className="flex items-center justify-between">
                   <div>
-                    <span className="text-xs font-bold text-zinc-200 block">Export Watermark</span>
-                    <span className="text-[10px] text-zinc-500">Branding watermark on exported video</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-zinc-200 block">Export Watermark</span>
+                      {isFreeTierUser ? (
+                        <span className="text-[9px] uppercase px-1.5 py-0.5 rounded bg-amber-950/70 text-amber-300 font-bold border border-amber-700/50">
+                          Free Tier
+                        </span>
+                      ) : (
+                        <span className="text-[9px] uppercase px-1.5 py-0.5 rounded bg-purple-950/70 text-purple-300 font-bold border border-purple-700/50">
+                          PRO Clean
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-zinc-500">
+                      {isFreeTierUser
+                        ? 'Free tier includes subtle branding watermark. Pro users get 100% clean exports.'
+                        : 'Clean export by default. You can optionally toggle your custom brand watermark.'}
+                    </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setWatermark(!watermark)}
-                    className={`text-[10px] font-mono px-2.5 py-1 rounded font-bold transition-all cursor-pointer ${
-                      watermark
-                        ? 'bg-purple-950 text-purple-300 border border-purple-700'
-                        : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
-                    }`}
-                  >
-                    {watermark ? 'Watermark: ON' : 'Watermark: OFF'}
-                  </button>
+                  {!isFreeTierUser ? (
+                    <button
+                      type="button"
+                      onClick={() => setWatermark(!watermark)}
+                      className={`text-[10px] font-mono px-2.5 py-1 rounded font-bold transition-all cursor-pointer ${
+                        watermark
+                          ? 'bg-purple-950 text-purple-300 border border-purple-700'
+                          : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
+                      }`}
+                    >
+                      {watermark ? 'Custom WM: ON' : 'Watermark: OFF'}
+                    </button>
+                  ) : (
+                    <div className="text-[10px] font-mono px-2.5 py-1 rounded font-bold bg-amber-950/80 text-amber-200 border border-amber-700/60 flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                      <span>Free Watermark</span>
+                    </div>
+                  )}
                 </div>
 
-                {watermark && (
+                {/* Custom Brand Watermark Text Input */}
+                {((!isFreeTierUser && watermark) || isFreeTierUser) && (
                   <div>
-                    <label className="text-[10px] text-zinc-400 font-semibold block mb-1">Custom Brand Watermark Text:</label>
+                    <label className="text-[10px] text-zinc-400 font-semibold block mb-1">
+                      {isFreeTierUser ? 'Watermark Branding Text:' : 'Custom Brand Watermark Text:'}
+                    </label>
                     <input
                       type="text"
                       value={watermarkText}
                       onChange={(e) => setWatermarkText(e.target.value)}
-                      placeholder="@YourBrand or Prune Master AI"
+                      placeholder={isFreeTierUser ? 'ClipMaster AI' : '@YourBrand or Channel'}
                       className="w-full bg-[#0a0a0f] border border-zinc-700 focus:border-purple-500 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono"
                     />
                   </div>

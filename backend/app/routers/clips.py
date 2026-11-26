@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.config import TEMP_DIR, CLIPS_DIR, UPLOADS_DIR
+from app.config import TEMP_DIR, CLIPS_DIR, UPLOADS_DIR, TRANSCRIPTS_DIR
 from app.database import get_db, SessionLocal
 from app.models import Video, Clip, Job, User, IPTrialRecord, SystemSetting
 from app.schemas import (
@@ -27,7 +27,9 @@ from app.services.render_service import (
     generate_ass_subtitle_file,
     render_vertical_clip
 )
+from app.services.face_tracker_service import analyze_speaker_face_tracking
 from app.services.metadata_service import get_clip_social_metadata
+from app.services.grammar_service import polish_transcript_segments, polish_sentence_grammar
 from app.services.auth_service import get_current_user_optional
 from app.routers.auth import get_client_ip
 
@@ -76,6 +78,8 @@ class RenderOptionsPayload(BaseModel):
     transition: Optional[str] = "none"
     bg_music: Optional[str] = None
     bg_music_volume: Optional[float] = 0.18
+    crop_x_percent: Optional[float] = None
+    video_quality: Optional[str] = "high"
     overlays: Optional[List[TextOverlayItem]] = None
     edited_segments: Optional[List[EditedSegmentItem]] = None
 
@@ -98,7 +102,9 @@ def run_clip_render_worker(
     transition: str = "none",
     remove_silence: bool = False,
     bg_music: Optional[str] = None,
-    bg_music_volume: float = 0.18
+    bg_music_volume: float = 0.18,
+    crop_x_percent: Optional[float] = None,
+    video_quality: str = "high"
 ):
     """
     Background worker that reframes video, adjusts volume, applies watermark,
@@ -122,21 +128,33 @@ def run_clip_render_worker(
 
         # 1. Generate ASS subtitles if requested
         ass_path = None
-        has_transcript_source = bool((video.transcript_path and Path(video.transcript_path).exists()) or edited_segments or overlays or watermark)
-        if burn_captions and has_transcript_source:
+        t_path = None
+        if video.transcript_path and Path(video.transcript_path).exists():
+            t_path = Path(video.transcript_path)
+        elif (TRANSCRIPTS_DIR / f"{video.id}_transcript.json").exists():
+            t_path = TRANSCRIPTS_DIR / f"{video.id}_transcript.json"
+            video.transcript_path = str(t_path)
+            db.commit()
+        elif video.transcript_path and (TRANSCRIPTS_DIR / Path(video.transcript_path).name).exists():
+            t_path = TRANSCRIPTS_DIR / Path(video.transcript_path).name
+            video.transcript_path = str(t_path)
+            db.commit()
+
+        has_transcript_source = bool((t_path and t_path.exists()) or edited_segments or overlays or watermark)
+        if (burn_captions or watermark or overlays) and has_transcript_source:
             job.progress = 10
             job.message = "Synthesizing custom styled subtitle & text layers..."
             db.commit()
 
             try:
                 transcript = {"segments": []}
-                if video.transcript_path and Path(video.transcript_path).exists():
-                    with open(video.transcript_path, "r", encoding="utf-8") as f:
+                if t_path and t_path.exists():
+                    with open(t_path, "r", encoding="utf-8") as f:
                         transcript = json.load(f)
 
                 ass_filename = f"clip_{clip.id}.ass"
                 ass_path = TEMP_DIR / ass_filename
-                generate_ass_subtitle_file(
+                has_ass_content = generate_ass_subtitle_file(
                     transcript=transcript,
                     clip_start=clip.start_time,
                     clip_end=clip.end_time,
@@ -149,8 +167,11 @@ def run_clip_render_worker(
                     custom_overlays=overlays,
                     edited_segments=edited_segments,
                     watermark=watermark,
-                    watermark_text=watermark_text
+                    watermark_text=watermark_text,
+                    burn_captions=burn_captions
                 )
+                if not has_ass_content:
+                    ass_path = None
             except Exception as e:
                 logger.warning(f"Could not generate subtitles: {e}")
                 ass_path = None
@@ -182,7 +203,9 @@ def run_clip_render_worker(
             aspect_ratio=aspect_ratio,
             volume_level=volume_level,
             vocal_boost=vocal_boost,
-            transition=transition
+            transition=transition,
+            crop_x_percent=crop_x_percent,
+            video_quality=video_quality
         )
 
         if not ok:
@@ -246,7 +269,7 @@ def get_video_highlights(
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    preferred_model = "gemini-2.5-pro"
+    preferred_model = os.environ.get("GEMINI_MODEL") or "gemini-flash-lite-latest"
     if authorization:
         user = get_current_user_optional(authorization, db)
         if user:
@@ -254,6 +277,8 @@ def get_video_highlights(
                 x_gemini_key = user.gemini_api_key
             if getattr(user, "gemini_model", None):
                 preferred_model = user.gemini_model
+    if not x_gemini_key:
+        x_gemini_key = os.environ.get("GEMINI_API_KEY")
 
     if not video.transcript_path or not Path(video.transcript_path).exists():
         raise HTTPException(
@@ -334,6 +359,8 @@ def trigger_clip_render(
     title: Optional[str] = Query(None),
     text_position: Optional[str] = Query("center"),
     font_size_scale: Optional[float] = Query(1.0),
+    crop_x_percent: Optional[float] = Query(None),
+    video_quality: str = Query("high"),
     db: Session = Depends(get_db)
 ):
     clip = db.query(Clip).filter(Clip.id == clip_id).first()
@@ -381,10 +408,12 @@ def trigger_clip_render(
                 db.commit()
 
     # Default options for new features
+    # Free tier users get the platform watermark; Pro & Director users get 100% clean, watermark-free exports
+    is_pro_tier = bool(current_user and (current_user.role == "director" or current_user.is_pro))
     volume_level = 1.0
     vocal_boost = False
-    watermark = True
-    watermark_text = "ClipMaster AI"
+    watermark = not is_pro_tier
+    watermark_text = "ClipMaster AI" if not is_pro_tier else ""
     transition = "none"
     remove_silence = False
     bg_music = None
@@ -417,9 +446,9 @@ def trigger_clip_render(
         if payload.vocal_boost is not None:
             vocal_boost = bool(payload.vocal_boost)
         if payload.watermark is not None:
-            watermark = bool(payload.watermark)
+            watermark = bool(payload.watermark) if is_pro_tier else True
         if payload.watermark_text is not None:
-            watermark_text = str(payload.watermark_text).strip()
+            watermark_text = str(payload.watermark_text).strip() if payload.watermark_text else ("ClipMaster AI" if not is_pro_tier else "")
         if payload.transition is not None:
             transition = str(payload.transition).strip()
         if payload.remove_silence is not None:
@@ -428,6 +457,14 @@ def trigger_clip_render(
             bg_music = str(payload.bg_music).strip()
         if payload.bg_music_volume is not None:
             bg_music_volume = float(payload.bg_music_volume)
+
+    crop_x_val = None
+    if payload and payload.crop_x_percent is not None:
+        crop_x_val = float(payload.crop_x_percent)
+    elif crop_x_percent is not None:
+        crop_x_val = float(crop_x_percent)
+
+    quality_val = (payload.video_quality if payload and payload.video_quality else video_quality) or "high"
 
     # Normalize aspect ratio (handles "9:16", "9:16 (1080p)", "16:9", "1:1", etc.)
     raw_aspect = str(aspect_ratio).strip().lower()
@@ -531,9 +568,56 @@ def trigger_clip_render(
         transition,
         remove_silence,
         bg_music,
-        bg_music_volume
+        bg_music_volume,
+        crop_x_val,
+        quality_val
     )
     return job
+
+@router.api_route("/api/clips/{clip_id}/detect-face", methods=["GET", "POST"])
+def detect_clip_face(
+    clip_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Scans the clip keyframes with multi-cascade face & motion tracking
+    to detect speaker coordinates and return optimal horizontal crop percentage.
+    """
+    clip = db.query(Clip).filter(Clip.id == clip_id).first()
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    video = db.query(Video).filter(Video.id == clip.video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Source video not found")
+    source_video_path = UPLOADS_DIR / video.filename
+    if not source_video_path.exists():
+        raise HTTPException(status_code=404, detail="Source video file missing on disk")
+
+    try:
+        face_info = analyze_speaker_face_tracking(
+            source_video_path,
+            clip.start_time,
+            clip.end_time
+        )
+        return {
+            "clip_id": clip_id,
+            "crop_x_percent": face_info.get("crop_x_percent", 50.0),
+            "speaker_center_x": face_info.get("speaker_center_x"),
+            "mode": face_info.get("mode", "smart_center"),
+            "speaker_count": face_info.get("speaker_count", 1),
+            "detections_count": face_info.get("detections_count", 0),
+            "keyframe_crops": face_info.get("keyframe_crops", [])
+        }
+    except Exception as e:
+        logger.error(f"Face detection failed for clip {clip_id}: {e}", exc_info=True)
+        return {
+            "clip_id": clip_id,
+            "crop_x_percent": 50.0,
+            "speaker_center_x": None,
+            "mode": "standard_center",
+            "speaker_count": 1,
+            "detections_count": 0
+        }
 
 @router.get("/api/clips", response_model=List[ClipResponse])
 def list_clips(
@@ -587,9 +671,21 @@ def get_clip_transcript(clip_id: int, db: Session = Depends(get_db)):
     segments_out = []
     full_text_parts = []
 
+    t_path = None
     if video.transcript_path and Path(video.transcript_path).exists():
+        t_path = Path(video.transcript_path)
+    elif (TRANSCRIPTS_DIR / f"{video.id}_transcript.json").exists():
+        t_path = TRANSCRIPTS_DIR / f"{video.id}_transcript.json"
+        video.transcript_path = str(t_path)
+        db.commit()
+    elif video.transcript_path and (TRANSCRIPTS_DIR / Path(video.transcript_path).name).exists():
+        t_path = TRANSCRIPTS_DIR / Path(video.transcript_path).name
+        video.transcript_path = str(t_path)
+        db.commit()
+
+    if t_path and t_path.exists():
         try:
-            with open(video.transcript_path, "r", encoding="utf-8") as f:
+            with open(t_path, "r", encoding="utf-8") as f:
                 tdata = json.load(f)
 
             for idx, seg in enumerate(tdata.get("segments", [])):
@@ -645,6 +741,95 @@ def get_clip_transcript(clip_id: int, db: Session = Depends(get_db)):
         "caption_style": clip.caption_style,
         "full_text": full_text,
         "segments": segments_out
+    }
+
+class PolishGrammarRequest(BaseModel):
+    segments: Optional[List[Dict[str, Any]]] = None
+
+@router.post("/api/clips/{clip_id}/polish-grammar")
+def polish_clip_grammar(
+    clip_id: int,
+    payload: Optional[PolishGrammarRequest] = Body(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Polishes transcript segments using advanced English grammar, syntax,
+    capitalization, and punctuation correction while strictly preserving
+    word-level timestamps for karaoke and kinetic word-pop captions.
+    """
+    clip = db.query(Clip).filter(Clip.id == clip_id).first()
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+
+    target_segments = []
+    if payload and payload.segments:
+        target_segments = payload.segments
+    else:
+        # Load segments from video transcript
+        video = db.query(Video).filter(Video.id == clip.video_id).first()
+        t_path = None
+        if video and video.transcript_path and Path(video.transcript_path).exists():
+            t_path = Path(video.transcript_path)
+        elif video and (TRANSCRIPTS_DIR / f"{video.id}_transcript.json").exists():
+            t_path = TRANSCRIPTS_DIR / f"{video.id}_transcript.json"
+        elif video and video.transcript_path and (TRANSCRIPTS_DIR / Path(video.transcript_path).name).exists():
+            t_path = TRANSCRIPTS_DIR / Path(video.transcript_path).name
+
+        if t_path and t_path.exists():
+            try:
+                with open(t_path, "r", encoding="utf-8") as f:
+                    tdata = json.load(f)
+                clip_start = clip.start_time
+                clip_end = clip.end_time
+                clip_duration = clip_end - clip_start
+                for idx, seg in enumerate(tdata.get("segments", [])):
+                    s_start = float(seg.get("start", 0.0))
+                    s_end = float(seg.get("end", 0.0))
+                    if s_end > clip_start and s_start < clip_end:
+                        seg_text = seg.get("text", "").strip()
+                        rel_start = max(0.0, s_start - clip_start)
+                        rel_end = min(clip_duration, s_end - clip_start)
+                        words_out = []
+                        for w in seg.get("words", []):
+                            w_start = float(w.get("start", 0.0))
+                            w_end = float(w.get("end", 0.0))
+                            if w_end > clip_start and w_start < clip_end:
+                                words_out.append({
+                                    "word": w.get("word", "").strip(),
+                                    "start": max(0.0, round(w_start - clip_start, 2)),
+                                    "end": min(clip_duration, round(w_end - clip_start, 2)),
+                                    "abs_start": round(w_start, 2),
+                                    "abs_end": round(w_end, 2)
+                                })
+                        target_segments.append({
+                            "id": idx + 1,
+                            "text": seg_text,
+                            "start": round(rel_start, 2),
+                            "end": round(rel_end, 2),
+                            "abs_start": round(s_start, 2),
+                            "abs_end": round(s_end, 2),
+                            "words": words_out
+                        })
+            except Exception as e:
+                logger.error(f"Error reading transcript for clip {clip_id}: {e}")
+
+    if not target_segments:
+        return {
+            "clip_id": clip_id,
+            "segments": [],
+            "corrections_made": 0,
+            "segments_count": 0,
+            "message": "No segments found to polish."
+        }
+
+    polished_segs, stats = polish_transcript_segments(target_segments)
+
+    return {
+        "clip_id": clip_id,
+        "segments": polished_segs,
+        "corrections_made": stats["corrections_made"],
+        "segments_count": stats["segments_count"],
+        "message": f"Successfully polished {stats['segments_count']} subtitle segments ({stats['corrections_made']} corrections applied)."
     }
 
 @router.get("/api/clips/{clip_id}/download")
@@ -753,7 +938,8 @@ def get_clip_metadata(
         except Exception as e:
             logger.error(f"Error reading transcript for metadata: {e}")
 
-    effective_key = api_key or x_gemini_api_key
+    user_key = (video.user.gemini_api_key if video.user and video.user.gemini_api_key else None) if video else None
+    effective_key = api_key or x_gemini_api_key or user_key or os.environ.get("GEMINI_API_KEY")
     metadata = get_clip_social_metadata(
         title=clip.title,
         text=clip_text,

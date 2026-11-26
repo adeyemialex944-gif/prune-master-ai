@@ -216,31 +216,42 @@ Generate an JSON object strictly matching this schema:
 Return ONLY valid JSON. No markdown backticks, no explanations.
 """
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    models_to_try = [
+        "gemini-flash-lite-latest",
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-flash-latest",
+        "gemini-pro-latest",
+        "gemini-2.5-flash",
+        "gemini-1.5-flash"
+    ]
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.4}
     }
 
-    try:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=12) as response:
-            result = json.loads(response.read().decode("utf-8"))
-            candidates = result.get("candidates", [])
-            if candidates:
-                raw_text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                raw_text = re.sub(r"^```json\s*", "", raw_text, flags=re.MULTILINE)
-                raw_text = re.sub(r"^```\s*", "", raw_text, flags=re.MULTILINE)
-                parsed = json.loads(raw_text.strip())
-                parsed["source"] = "gemini_ai"
-                return parsed
-    except Exception as e:
-        print(f"[metadata_service] Gemini API call error: {e}. Falling back to rule-based.")
-        return None
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key.strip()}"
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=12) as response:
+                result = json.loads(response.read().decode("utf-8"))
+                candidates = result.get("candidates", [])
+                if candidates:
+                    raw_text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    raw_text = re.sub(r"^```json\s*", "", raw_text, flags=re.MULTILINE)
+                    raw_text = re.sub(r"^```\s*", "", raw_text, flags=re.MULTILINE)
+                    parsed = json.loads(raw_text.strip())
+                    parsed["source"] = f"gemini_{model_name}"
+                    return parsed
+        except Exception as e:
+            continue
+
+    print("[metadata_service] All Gemini models failed or rate-limited. Falling back to rule-based.")
     return None
 
 

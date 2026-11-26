@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+backend/venv/
+*.env
+*.env.*
+
+# Backend folder (Netlify only builds frontend)
+backend/
+
+# Executables & Binaries
+*.exe
+cloudflared.exe
+ngrok.exe
+
+# Large media files (videos, audio, clips)
+*.mp4
+*.mp3
+*.wav
+*.mov
+*.avi
+*.mkv
+sample_teaching.mp4
+sermon_faith_message.mp4
+
+# SQLite & Databases
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Node & Frontend Build
+node_modules/
+frontend/node_modules/
+.netlify/
+
+# Logs
+*.log
+
+# Editor & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -11,6 +11,7 @@ from typing import Dict, Any, Callable, Optional, List
 import requests
 
 from app.config import MODELS_DIR, TRANSCRIPTS_DIR, TEMP_DIR, FFMPEG_BIN
+from app.services.grammar_service import polish_transcript_segments
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ def _transcribe_with_whisper(
         progress_callback(15, "Transcribing speech & detecting voice timestamps...")
 
     # Fast greedy search (beam_size=1) + VAD silence skipping: 3x-4x faster than beam_size=5
+    # initial_prompt ensures Whisper outputs proper punctuation, capitalization, and grammar
     segments_gen, info = model.transcribe(
         str(audio_path),
         beam_size=1,
@@ -63,7 +65,8 @@ def _transcribe_with_whisper(
         temperature=0.0,
         word_timestamps=True,
         vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=500)
+        vad_parameters=dict(min_silence_duration_ms=500),
+        initial_prompt="Hello, welcome. Please use proper punctuation, capitalization, and standard English grammar."
     )
 
     total_duration = info.duration if info.duration and info.duration > 0 else 1.0
@@ -93,12 +96,15 @@ def _transcribe_with_whisper(
             pct = min(95, max(15, pct))
             progress_callback(pct, f"Transcribing ({int(seg.end)}s / {int(total_duration)}s)...")
 
+    # Automatically polish English grammar, punctuation, and syntax while preserving word timestamps
+    polished_segments, _ = polish_transcript_segments(segments_list)
+
     result = {
         "language": info.language,
         "language_probability": round(info.language_probability, 3),
         "duration": round(info.duration, 3),
-        "total_segments": len(segments_list),
-        "segments": segments_list,
+        "total_segments": len(polished_segments),
+        "segments": polished_segments,
         "engine": "faster-whisper"
     }
 
@@ -207,7 +213,17 @@ def transcribe_with_gemini_flash(
             }
         }
 
-        models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash"]
+        models_to_try = [
+            "gemini-flash-lite-latest",
+            "gemini-3.1-flash-lite",
+            "gemini-3.5-flash-lite",
+            "gemini-flash-latest",
+            "gemini-pro-latest",
+            "gemini-3.1-pro-preview",
+            "gemini-2.5-flash",
+            "gemini-1.5-flash",
+            "gemini-2.0-flash"
+        ]
         for model in models_to_try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key.strip()}"
             try:
@@ -275,17 +291,20 @@ def transcribe_with_gemini_flash(
                 if not formatted_segments:
                     continue
 
-                total_dur = max(seg["end"] for seg in formatted_segments)
-                if progress_callback:
-                    progress_callback(100, f"⚡ Gemini Flash completed in ~4s! ({len(formatted_segments)} segments)")
+                # Automatically polish English grammar, syntax, and punctuation
+                polished_segments, _ = polish_transcript_segments(formatted_segments)
 
-                logger.info(f"Successfully transcribed audio with {model} ({len(formatted_segments)} segments).")
+                total_dur = max(seg["end"] for seg in polished_segments)
+                if progress_callback:
+                    progress_callback(100, f"⚡ Gemini Flash completed in ~4s! ({len(polished_segments)} segments)")
+
+                logger.info(f"Successfully transcribed audio with {model} ({len(polished_segments)} segments).")
                 return {
                     "language": data.get("language", "en"),
                     "language_probability": 0.98,
                     "duration": round(total_dur, 3),
-                    "total_segments": len(formatted_segments),
-                    "segments": formatted_segments,
+                    "total_segments": len(polished_segments),
+                    "segments": polished_segments,
                     "engine": f"gemini_{model}"
                 }
             except Exception as e:

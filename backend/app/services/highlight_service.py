@@ -361,14 +361,19 @@ Return strictly a valid JSON array:
         }
     }
 
-    # Model priority: preferred model -> gemini-2.5-pro -> gemini-1.5-pro -> gemini-2.5-flash -> gemini-2.0-flash -> gemini-1.5-flash
+    # Model priority: preferred model -> modern Gemini Flash / Flash-Lite / Pro models -> legacy models
     models_to_try = [
-        preferred_model if preferred_model else "gemini-2.5-pro",
-        "gemini-2.5-pro",
-        "gemini-1.5-pro",
+        preferred_model if preferred_model else "gemini-flash-lite-latest",
+        "gemini-flash-lite-latest",
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-flash-latest",
+        "gemini-pro-latest",
+        "gemini-3.1-pro-preview",
         "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash"
+        "gemini-2.5-pro",
+        "gemini-1.5-flash",
+        "gemini-2.0-flash"
     ]
     seen = set()
     ordered_models = [m for m in models_to_try if not (m in seen or seen.add(m))]

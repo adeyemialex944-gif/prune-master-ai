@@ -324,7 +324,7 @@ export default function App() {
   const [profileFullName, setProfileFullName] = useState<string>('')
   const [profileAvatarUrl, setProfileAvatarUrl] = useState<string>('')
   const [profileGeminiKey, setProfileGeminiKey] = useState<string>('')
-  const [profileGeminiModel, setProfileGeminiModel] = useState<string>('gemini-2.5-pro')
+  const [profileGeminiModel, setProfileGeminiModel] = useState<string>('gemini-flash-lite-latest')
   const [isUploadingAvatar, setIsUploadingAvatar] = useState<boolean>(false)
   const [isSavingProfile, setIsSavingProfile] = useState<boolean>(false)
   const [profileToast, setProfileToast] = useState<{ type: 'success' | 'error', text: string } | null>(null)
@@ -655,12 +655,17 @@ export default function App() {
           full_name: profileFullName.trim() || undefined,
           avatar_url: profileAvatarUrl.trim() || undefined,
           gemini_api_key: profileGeminiKey.trim() || undefined,
-          gemini_model: profileGeminiModel || 'gemini-2.5-pro'
+          gemini_model: profileGeminiModel || 'gemini-flash-lite-latest'
         })
       })
       if (res.ok) {
         const updated = await res.json()
         setCurrentUser(updated)
+        if (profileGeminiKey.trim()) {
+          localStorage.setItem('prune_master_api_key', profileGeminiKey.trim())
+          localStorage.setItem('clipmaster_api_key', profileGeminiKey.trim())
+          setGeminiApiKey(profileGeminiKey.trim())
+        }
         setProfileToast({ type: 'success', text: 'Profile & AI preferences saved!' })
         setTimeout(() => setIsProfileModalOpen(false), 1200)
       } else {
@@ -1274,12 +1279,45 @@ export default function App() {
     fetchTrialStatus('')
     setIsAuthModalOpen(true)
   }
+
+  const enterStandaloneMode = () => {
+    setIsWakingUpServer(false)
+    setIsCheckingAuth(false)
+    const savedGeminiKey = localStorage.getItem('prune_master_api_key') || localStorage.getItem('clipmaster_api_key') || ''
+    const standaloneUser: AuthUser = {
+      id: 1,
+      username: 'Director (Laptop Storage)',
+      email: 'adeyemialex944@gmail.com',
+      full_name: 'Master Director',
+      role: 'director',
+      status: 'approved',
+      created_at: new Date().toISOString(),
+      is_pro: true,
+      trial_credits: 9999,
+      trial_credits_used: 0,
+      gemini_api_key: savedGeminiKey,
+      gemini_model: 'gemini-flash-lite-latest'
+    }
+    setCurrentUser(standaloneUser)
+    localStorage.setItem('prune_master_user', JSON.stringify(standaloneUser))
+    localStorage.setItem('prune_master_api_key', savedGeminiKey)
+    localStorage.setItem('clipmaster_api_key', savedGeminiKey)
+    setGeminiApiKey(savedGeminiKey)
+    setProfileGeminiKey(savedGeminiKey)
+    setIsBackendOnline(false)
+    setActiveTab('editor')
+  }
+
   useEffect(() => {
     // 1. Detect if Render container is sleeping on cold-start (unresponsive for >2.8s)
     let isConnected = false
     const wakeUpTimer = setTimeout(() => {
       if (!isConnected) {
-        setIsWakingUpServer(true)
+        if (typeof window !== 'undefined' && window.location.hostname.includes('netlify.app')) {
+          enterStandaloneMode()
+        } else {
+          setIsWakingUpServer(true)
+        }
       }
     }, 2800)
 
@@ -2358,6 +2396,20 @@ export default function App() {
             </span>
             <span className="text-zinc-500 text-[10px]">Pinging every 1.5s</span>
           </div>
+
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={enterStandaloneMode}
+              className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <HardDrive className="h-4 w-4 text-yellow-300" />
+              <span>Launch Studio in Laptop Storage Mode</span>
+            </button>
+            <p className="text-[10px] text-zinc-500 mt-1.5 text-center">
+              Edit videos and export directly using your laptop hardware without waiting for cloud servers.
+            </p>
+          </div>
         </div>
       </div>
     )
@@ -2412,6 +2464,20 @@ export default function App() {
               <h2 className="text-lg font-bold text-white">Prune Master AI Studio Access</h2>
               <p className="text-xs text-zinc-400 mt-1 max-w-sm mx-auto">
                 Sign up to create your own personal reels studio, or sign in to your approved account.
+              </p>
+            </div>
+            {/* Quick Standalone / Laptop Storage Mode Button */}
+            <div className="px-6 pt-4 pb-3 border-b border-[#1f1f2b] bg-[#0c0c11]">
+              <button
+                type="button"
+                onClick={enterStandaloneMode}
+                className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-purple-900/90 via-indigo-900/90 to-purple-800/90 hover:from-purple-800 hover:to-indigo-800 border border-purple-500/50 text-white text-xs font-bold shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <HardDrive className="h-4 w-4 text-yellow-300" />
+                <span>Launch Studio (Laptop Storage Mode)</span>
+              </button>
+              <p className="text-[10px] text-zinc-400 text-center mt-1.5">
+                Zero cloud server needed • Works 100% directly on your laptop
               </p>
             </div>
             {/* Mode Switcher Tabs */}
@@ -3038,7 +3104,7 @@ export default function App() {
                   setProfileAvatarUrl(currentUser.avatar_url || '')
                   setProfileFullName(currentUser.full_name || '')
                   setProfileGeminiKey(currentUser.gemini_api_key || '')
-                  setProfileGeminiModel(currentUser.gemini_model || 'gemini-2.5-pro')
+                  setProfileGeminiModel(currentUser.gemini_model || 'gemini-flash-lite-latest')
                   setIsProfileModalOpen(true)
                 }}
                 className="flex items-center justify-between p-1 rounded-lg hover:bg-zinc-800/40 cursor-pointer transition-colors"
@@ -3302,7 +3368,7 @@ export default function App() {
                   setProfileAvatarUrl(currentUser.avatar_url || '')
                   setProfileFullName(currentUser.full_name || '')
                   setProfileGeminiKey(currentUser.gemini_api_key || '')
-                  setProfileGeminiModel(currentUser.gemini_model || 'gemini-2.5-pro')
+                  setProfileGeminiModel(currentUser.gemini_model || 'gemini-flash-lite-latest')
                   setIsProfileModalOpen(true)
                 }}
                 className="flex items-center gap-2 px-2.5 py-1 rounded-xl bg-[#13131b] border border-[#272738] hover:border-purple-500/60 cursor-pointer transition-all shadow-sm"
@@ -7054,7 +7120,7 @@ export default function App() {
                               {user.last_ip || user.registration_ip || '127.0.0.1'}
                             </td>
                             <td className="py-3 px-3 font-mono text-purple-300 text-[10px]">
-                              {user.gemini_model || 'gemini-2.5-pro'}
+                              {user.gemini_model || 'gemini-flash-lite-latest'}
                             </td>
                             <td className="py-3 px-3">
                               <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
@@ -8095,10 +8161,16 @@ export default function App() {
                     onChange={(e) => setProfileGeminiModel(e.target.value)}
                     className="w-full bg-[#0a0a0f] border border-zinc-700 focus:border-purple-500 rounded-xl px-2.5 py-1.5 text-xs text-white font-medium"
                   >
-                    <option value="gemini-2.5-pro">⚡ Google Gemini 2.5 Pro (Highest Flagship • Deep Reasoning & Hooks)</option>
-                    <option value="gemini-1.5-pro">🧠 Google Gemini 1.5 Pro (Flagship Pro • 1M Context & Retention Scoring)</option>
-                    <option value="gemini-2.5-flash">🚀 Google Gemini 2.5 Flash (Next-Gen Fast Pro)</option>
-                    <option value="gemini-2.0-flash">⚡ Google Gemini 2.0 Flash (Lightning Fast Sub-Second)</option>
+                    <option value="gemini-flash-lite-latest">⚡ Google Gemini Flash-Lite Latest (Ultra-Fast • High Capacity • Recommended)</option>
+                    <option value="gemini-3.1-flash-lite">🚀 Google Gemini 3.1 Flash-Lite (Next-Gen 3.1 Architecture)</option>
+                    <option value="gemini-3.5-flash-lite">⚡ Google Gemini 3.5 Flash-Lite (Next-Gen High Speed)</option>
+                    <option value="gemini-flash-latest">🚀 Google Gemini Flash Latest (High Throughput & Speed)</option>
+                    <option value="gemini-pro-latest">🧠 Google Gemini Pro Latest (Deep Reasoning & Hooks)</option>
+                    <option value="gemini-3.1-pro-preview">🔬 Google Gemini 3.1 Pro Preview</option>
+                    <option value="gemini-2.5-pro">⚡ Google Gemini 2.5 Pro (Flagship Deep Reasoning)</option>
+                    <option value="gemini-1.5-pro">🧠 Google Gemini 1.5 Pro (1M Context & Retention Scoring)</option>
+                    <option value="gemini-2.5-flash">🚀 Google Gemini 2.5 Flash</option>
+                    <option value="gemini-2.0-flash">⚡ Google Gemini 2.0 Flash</option>
                   </select>
                 </div>
                 <div>

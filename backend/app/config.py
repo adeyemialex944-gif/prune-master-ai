@@ -2,6 +2,7 @@ import glob
 import os
 import shutil
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Silence Hugging Face symlink warning on standard Windows permissions
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -10,6 +11,10 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 APP_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = APP_DIR.parent
 PROJECT_ROOT = BACKEND_DIR.parent
+
+# Load local environment variables from .env
+load_dotenv(BACKEND_DIR / ".env")
+load_dotenv(PROJECT_ROOT / ".env")
 
 DATA_DIR = BACKEND_DIR / "data"
 UPLOADS_DIR = DATA_DIR / "uploads"

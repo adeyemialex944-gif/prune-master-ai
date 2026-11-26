@@ -69,7 +69,8 @@ def generate_ass_subtitle_file(
     custom_overlays: Optional[List[Dict[str, Any]]] = None,
     edited_segments: Optional[List[Dict[str, Any]]] = None,
     watermark: bool = False,
-    watermark_text: str = "ClipMaster AI"
+    watermark_text: str = "ClipMaster AI",
+    burn_captions: bool = True
 ) -> bool:
     """
     Generates an Advanced SubStation Alpha (.ass) subtitle file specifically styled
@@ -255,74 +256,75 @@ def generate_ass_subtitle_file(
     font_size = int(font_size * scale_factor)
     outline_width = max(2, int(outline_width * (0.8 + 0.2 * scale_factor)))
 
-    # Build dialogue lines: word-by-word (1 word at a time) or short phrases
+    # Build dialogue lines: word-by-word (1 word at a time) or short phrases (if burn_captions is True)
     dialogue_lines = []
-    if clip_words and is_word_by_word:
-        # Render exactly one single word at a time
-        for i in range(len(clip_words)):
-            w = clip_words[i]
-            w_text = w["word"].strip()
-            if not w_text:
-                continue
+    if burn_captions:
+        if clip_words and is_word_by_word:
+            # Render exactly one single word at a time
+            for i in range(len(clip_words)):
+                w = clip_words[i]
+                w_text = w["word"].strip()
+                if not w_text:
+                    continue
 
-            c_start = w["start"]
-            # Smooth transition to the next word so there is no flickering black gap
-            if i + 1 < len(clip_words):
-                next_start = clip_words[i + 1]["start"]
-                if next_start > c_start and (next_start - w["end"]) < 0.35:
-                    c_end = min(c_start + 1.2, next_start)
+                c_start = w["start"]
+                # Smooth transition to the next word so there is no flickering black gap
+                if i + 1 < len(clip_words):
+                    next_start = clip_words[i + 1]["start"]
+                    if next_start > c_start and (next_start - w["end"]) < 0.35:
+                        c_end = min(c_start + 1.2, next_start)
+                    else:
+                        c_end = max(w["end"], c_start + 0.18)
                 else:
-                    c_end = max(w["end"], c_start + 0.18)
-            else:
-                c_end = max(w["end"], c_start + 0.3)
+                    c_end = max(w["end"], c_start + 0.3)
 
-            # Ensure minimum visibility duration (at least 0.18s)
-            if c_end - c_start < 0.18:
-                c_end = c_start + 0.18
+                # Ensure minimum visibility duration (at least 0.18s)
+                if c_end - c_start < 0.18:
+                    c_end = c_start + 0.18
 
-            # Clean trailing punctuation and capitalize first letter
-            clean_w = w_text.strip(" ,.?!:;\"'()[]{}")
-            display_word = clean_w if clean_w else w_text
-            if display_word and display_word[0].islower():
-                display_word = display_word[0].upper() + display_word[1:]
+                # Clean trailing punctuation and capitalize first letter
+                clean_w = w_text.strip(" ,.?!:;\"'()[]{}")
+                display_word = clean_w if clean_w else w_text
+                if display_word and display_word[0].islower():
+                    display_word = display_word[0].upper() + display_word[1:]
 
-            start_str = format_ass_time(c_start)
-            end_str = format_ass_time(c_end)
-            # Lock position with \an5\pos to completely eliminate vertical bouncing / jumping up and down
-            dialogue_lines.append(
-                f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})}}{display_word}"
-            )
-    elif clip_words:
-        # Group words into short 3-4 word rhythmic chunks
-        chunk_size = 4
-        for i in range(0, len(clip_words), chunk_size):
-            chunk = clip_words[i:i + chunk_size]
-            c_start = chunk[0]["start"]
-            c_end = chunk[-1]["end"]
-            c_text = " ".join([w["word"] for w in chunk])
-
-            if c_text and not c_text[0].isupper():
-                c_text = c_text[0].upper() + c_text[1:]
-
-            start_str = format_ass_time(c_start)
-            end_str = format_ass_time(c_end)
-            dialogue_lines.append(
-                f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})}}{c_text}"
-            )
-    else:
-        # Fallback to segment slices
-        for seg in segments:
-            s_start = seg.get("start", 0.0)
-            s_end = seg.get("end", 0.0)
-            if s_end > clip_start and s_start < clip_end:
-                rel_start = max(0.0, s_start - clip_start)
-                rel_end = max(rel_start + 0.5, min(clip_end - clip_start, s_end - clip_start))
-                start_str = format_ass_time(rel_start)
-                end_str = format_ass_time(rel_end)
-                s_text = seg.get("text", "").strip()
+                start_str = format_ass_time(c_start)
+                end_str = format_ass_time(c_end)
+                # Lock position with \an5\pos to completely eliminate vertical bouncing / jumping up and down
                 dialogue_lines.append(
-                    f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})}}{s_text}"
+                    f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})}}{display_word}"
                 )
+        elif clip_words:
+            # Group words into short 3-4 word rhythmic chunks
+            chunk_size = 4
+            for i in range(0, len(clip_words), chunk_size):
+                chunk = clip_words[i:i + chunk_size]
+                c_start = chunk[0]["start"]
+                c_end = chunk[-1]["end"]
+                c_text = " ".join([w["word"] for w in chunk])
+
+                if c_text and not c_text[0].isupper():
+                    c_text = c_text[0].upper() + c_text[1:]
+
+                start_str = format_ass_time(c_start)
+                end_str = format_ass_time(c_end)
+                dialogue_lines.append(
+                    f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})}}{c_text}"
+                )
+        else:
+            # Fallback to segment slices
+            for seg in segments:
+                s_start = seg.get("start", 0.0)
+                s_end = seg.get("end", 0.0)
+                if s_end > clip_start and s_start < clip_end:
+                    rel_start = max(0.0, s_start - clip_start)
+                    rel_end = max(rel_start + 0.5, min(clip_end - clip_start, s_end - clip_start))
+                    start_str = format_ass_time(rel_start)
+                    end_str = format_ass_time(rel_end)
+                    s_text = seg.get("text", "").strip()
+                    dialogue_lines.append(
+                        f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})}}{s_text}"
+                    )
 
     # 3. Burn Custom Text Overlays (Headlines, Callouts, Titles, Watermarks)
     if custom_overlays:
@@ -409,6 +411,9 @@ def generate_ass_subtitle_file(
                 f"Dialogue: 2,0:00:00.00,{format_ass_time(clip_dur)},Default,,0,0,0,,{{\\an5\\pos({pos_x},{pos_y})\\fs{fs}\\bord3\\shad1\\c&H50FFFFFF&\\alpha&H60&}}{wm_text}"
             )
 
+    if not dialogue_lines:
+        return False
+
     ass_content = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {play_res_x}
@@ -445,7 +450,9 @@ def render_vertical_clip(
     aspect_ratio: str = "9:16",
     volume_level: float = 1.0,
     vocal_boost: bool = False,
-    transition: str = "none"
+    transition: str = "none",
+    crop_x_percent: Optional[float] = None,
+    video_quality: str = "high"
 ) -> bool:
     """
     Renders a clip (9:16 vertical or 16:9 widescreen) using FFmpeg with framing
@@ -476,33 +483,33 @@ def render_vertical_clip(
 
     if is_16_9:
         if framing_mode == "crop":
-            filtergraph = f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h}"
+            filtergraph = f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={target_w}:{target_h}"
         elif framing_mode == "fit":
-            filtergraph = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2"
+            filtergraph = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2"
         else:
             # High-performance blurred background for 16:9
             filtergraph = (
                 f"[0:v]split=2[bg_in][fg_in];"
                 f"[bg_in]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase,crop={bg_w}:{bg_h},boxblur=4:1,scale={target_w}:{target_h}[bg];"
-                f"[fg_in]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease[fg];"
+                f"[fg_in]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd[fg];"
                 f"[bg][fg]overlay=(W-w)/2:(H-h)/2"
             )
     elif is_1_1:
         if framing_mode == "crop":
-            filtergraph = f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h}"
+            filtergraph = f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={target_w}:{target_h}"
         elif framing_mode == "fit":
-            filtergraph = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2"
+            filtergraph = f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd,pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2"
         else:
             # High-performance blurred background for 1:1 square
             filtergraph = (
                 f"[0:v]split=2[bg_in][fg_in];"
                 f"[bg_in]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase,crop={bg_w}:{bg_h},boxblur=4:1,scale={target_w}:{target_h}[bg];"
-                f"[fg_in]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease[fg];"
+                f"[fg_in]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd[fg];"
                 f"[bg][fg]overlay=(W-w)/2:(H-h)/2"
             )
     else:
         # 9:16 Vertical video
-        if framing_mode in ("smart_face", "face_tracking", "autotrack"):
+        if crop_x_percent is not None or framing_mode in ("smart_face", "face_tracking", "autotrack"):
             if progress_callback:
                 progress_callback(12, "Scanning speaker face coordinates & calculating smart center...")
             face_info = analyze_speaker_face_tracking(
@@ -510,26 +517,28 @@ def render_vertical_clip(
                 start_time,
                 end_time,
                 target_w=target_w,
-                target_h=target_h
+                target_h=target_h,
+                crop_x_percent=crop_x_percent,
+                framing_mode=framing_mode
             )
             filtergraph = face_info.get(
                 "filter_crop",
-                f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h}"
+                f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={target_w}:{target_h}"
             )
         elif framing_mode == "crop":
             # Scale to fill target_w x target_h and crop the center
-            filtergraph = f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h}"
+            filtergraph = f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase:flags=lanczos+accurate_rnd,crop={target_w}:{target_h}"
         else:
             # High-performance blurred background for 9:16 vertical
             filtergraph = (
                 f"[0:v]split=2[bg_in][fg_in];"
                 f"[bg_in]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase,crop={bg_w}:{bg_h},boxblur=4:1,scale={target_w}:{target_h}[bg];"
-                f"[fg_in]scale={target_w}:-2[fg];"
+                f"[fg_in]scale={target_w}:-2:flags=lanczos+accurate_rnd[fg];"
                 f"[bg][fg]overlay=(W-w)/2:(H-h)/2"
             )
 
-    # 2. Add subtitle burning filter if enabled and provided
-    if burn_captions and subtitle_ass_path and subtitle_ass_path.exists():
+    # 2. Add subtitle / text overlay / watermark burning filter if ASS file is provided and exists
+    if subtitle_ass_path and subtitle_ass_path.exists():
         # Clean path for FFmpeg filter on Windows: replace backslashes with forward slashes
         clean_sub_path = str(subtitle_ass_path).replace("\\", "/")
         # Escape colon for Windows drive letter: C:/ -> C\\:/
@@ -556,15 +565,35 @@ def render_vertical_clip(
     if vocal_boost:
         af_filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
 
-    # Ultra-HD Quality vs Standard (Memory-optimized for 512MB RAM environment)
+    # High-Fidelity Studio Video Engine:
+    # Tuned CRF, fast x264 preset, high profile, level 4.2/5.1, and 320k 48kHz pristine audio
+    vq = str(video_quality or "high").lower()
     is_4k = str(resolution).lower() == "4k"
-    crf_val = "18" if is_4k else "23"
-    preset_val = "veryfast" if is_4k else "ultrafast"
+    is_1080 = str(resolution).lower() == "1080p"
+
+    if vq == "ultra":
+        crf_val = "15" if is_4k else ("17" if is_1080 else "18")
+        preset_val = "fast"
+        maxrate_val = "40M" if is_4k else "25M"
+        bufsize_val = "80M" if is_4k else "50M"
+        audio_bitrate = "320k"
+    elif vq == "balanced":
+        crf_val = "22"
+        preset_val = "veryfast"
+        maxrate_val = "16M" if is_4k else "10M"
+        bufsize_val = "32M" if is_4k else "20M"
+        audio_bitrate = "192k"
+    else:  # "high" (Default: razor-sharp, zero blockiness)
+        crf_val = "17" if is_4k else ("18" if is_1080 else "19")
+        preset_val = "fast"
+        maxrate_val = "30M" if is_4k else "18M"
+        bufsize_val = "60M" if is_4k else "36M"
+        audio_bitrate = "320k"
 
     cmd = [
         ffmpeg_bin,
         "-y",
-        "-threads", "2",
+        "-threads", "0",
         "-ss", str(start_time),
         "-t", str(duration),
         "-i", str(source_video_path),
@@ -572,6 +601,11 @@ def render_vertical_clip(
         "-c:v", "libx264",
         "-preset", preset_val,
         "-crf", crf_val,
+        "-tune", "film",
+        "-profile:v", "high",
+        "-level", "5.1" if is_4k else "4.2",
+        "-maxrate", maxrate_val,
+        "-bufsize", bufsize_val,
         "-pix_fmt", "yuv420p"
     ]
 
@@ -580,7 +614,8 @@ def render_vertical_clip(
 
     cmd.extend([
         "-c:a", "aac",
-        "-b:a", "192k",
+        "-b:a", audio_bitrate,
+        "-ar", "48000",
         "-movflags", "+faststart",
         str(output_clip_path)
     ])
