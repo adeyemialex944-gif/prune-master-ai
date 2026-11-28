@@ -1169,7 +1169,14 @@ export default function App() {
         setAuthError(data.detail || 'Sign in failed. Please check your credentials.')
       }
     } catch (err) {
-      setAuthError('Connection error. Is the backend server running?')
+      const isNetlify = typeof window !== 'undefined' && window.location.hostname.includes('netlify.app')
+      if (isNetlify || !isBackendOnline) {
+        enterStandaloneMode(loginVal || 'Master Director')
+        setAuthSuccessMsg(`✨ Welcome! Connected in Device Storage Studio Mode.`)
+        setTimeout(() => setAuthSuccessMsg(null), 3500)
+        return
+      }
+      setAuthError('Connection error. Is the backend server running? Or click Launch Studio (Device Storage Mode) above.')
     } finally {
       setAuthLoading(false)
     }
@@ -1209,7 +1216,14 @@ export default function App() {
         setAuthError(data.detail || 'Registration failed.')
       }
     } catch (err) {
-      setAuthError('Connection error. Please try again.')
+      const isNetlify = typeof window !== 'undefined' && window.location.hostname.includes('netlify.app')
+      if (isNetlify || !isBackendOnline) {
+        enterStandaloneMode(regFullName.trim() || regUsername.trim() || 'Master Director')
+        setAuthSuccessMsg(`✨ Welcome! Studio created in Device Storage Mode.`)
+        setTimeout(() => setAuthSuccessMsg(null), 3500)
+        return
+      }
+      setAuthError('Connection error. Please try again or click Launch Studio (Device Storage Mode).')
     } finally {
       setAuthLoading(false)
     }
@@ -1265,6 +1279,13 @@ export default function App() {
         setAuthError(data.detail || 'Password recovery failed. Please verify your details.')
       }
     } catch (err) {
+      const isNetlify = typeof window !== 'undefined' && window.location.hostname.includes('netlify.app')
+      if (isNetlify || !isBackendOnline) {
+        enterStandaloneMode(forgotLoginInput.trim() || forgotFullNameInput.trim() || 'Master Director')
+        setAuthSuccessMsg(`✨ Studio accessed in Device Storage Mode.`)
+        setTimeout(() => setAuthSuccessMsg(null), 3500)
+        return
+      }
       setAuthError('Connection error during recovery. Is the backend server running?')
     } finally {
       setAuthLoading(false)
@@ -1280,15 +1301,19 @@ export default function App() {
     setIsAuthModalOpen(true)
   }
 
-  const enterStandaloneMode = () => {
+  const enterStandaloneMode = (customName?: string) => {
     setIsWakingUpServer(false)
     setIsCheckingAuth(false)
     const savedGeminiKey = localStorage.getItem('prune_master_api_key') || localStorage.getItem('clipmaster_api_key') || ''
+    const rawInput = (customName && customName.trim()) ? customName.trim() : ''
+    const isEmail = rawInput.includes('@')
+    const finalUsername = rawInput ? (isEmail ? rawInput.split('@')[0] : rawInput) : 'Master Director'
+    const finalEmail = isEmail ? rawInput : 'adeyemialex944@gmail.com'
     const standaloneUser: AuthUser = {
       id: 1,
-      username: 'Director (Laptop Storage)',
-      email: 'adeyemialex944@gmail.com',
-      full_name: 'Master Director',
+      username: finalUsername,
+      email: finalEmail,
+      full_name: finalUsername,
       role: 'director',
       status: 'approved',
       created_at: new Date().toISOString(),
@@ -1300,24 +1325,42 @@ export default function App() {
     }
     setCurrentUser(standaloneUser)
     localStorage.setItem('prune_master_user', JSON.stringify(standaloneUser))
-    localStorage.setItem('prune_master_api_key', savedGeminiKey)
-    localStorage.setItem('clipmaster_api_key', savedGeminiKey)
-    setGeminiApiKey(savedGeminiKey)
-    setProfileGeminiKey(savedGeminiKey)
+    if (savedGeminiKey) {
+      localStorage.setItem('prune_master_api_key', savedGeminiKey)
+      localStorage.setItem('clipmaster_api_key', savedGeminiKey)
+      setGeminiApiKey(savedGeminiKey)
+      setProfileGeminiKey(savedGeminiKey)
+    }
     setIsBackendOnline(false)
     setActiveTab('editor')
+    setIsAuthModalOpen(false)
+    setAuthError(null)
   }
 
   useEffect(() => {
-    // 1. Detect if Render container is sleeping on cold-start (unresponsive for >2.8s)
     let isConnected = false
+    const isNetlify = typeof window !== 'undefined' && window.location.hostname.includes('netlify.app')
+
+    // If hosted on Netlify, enter Standalone / Device Storage Mode instantly with 0ms delay!
+    if (isNetlify) {
+      const cachedUserStr = localStorage.getItem('prune_master_user')
+      if (cachedUserStr) {
+        try {
+          const cachedUser = JSON.parse(cachedUserStr)
+          setCurrentUser(cachedUser)
+          setIsCheckingAuth(false)
+          setActiveTab('editor')
+          return
+        } catch (_) {}
+      }
+      enterStandaloneMode()
+      return
+    }
+
+    // 1. Detect if Render container is sleeping on cold-start (unresponsive for >2.8s)
     const wakeUpTimer = setTimeout(() => {
       if (!isConnected) {
-        if (typeof window !== 'undefined' && window.location.hostname.includes('netlify.app')) {
-          enterStandaloneMode()
-        } else {
-          setIsWakingUpServer(true)
-        }
+        setIsWakingUpServer(true)
       }
     }, 2800)
 
@@ -2400,14 +2443,14 @@ export default function App() {
           <div className="pt-2">
             <button
               type="button"
-              onClick={enterStandaloneMode}
+              onClick={() => enterStandaloneMode()}
               className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
               <HardDrive className="h-4 w-4 text-yellow-300" />
-              <span>Launch Studio in Laptop Storage Mode</span>
+              <span>Launch Studio (Device Storage Mode)</span>
             </button>
             <p className="text-[10px] text-zinc-500 mt-1.5 text-center">
-              Edit videos and export directly using your laptop hardware without waiting for cloud servers.
+              Edit videos and export directly using your phone or laptop hardware without waiting for cloud servers.
             </p>
           </div>
         </div>
@@ -2466,18 +2509,18 @@ export default function App() {
                 Sign up to create your own personal reels studio, or sign in to your approved account.
               </p>
             </div>
-            {/* Quick Standalone / Laptop Storage Mode Button */}
+            {/* Quick Standalone / Device Storage Mode Button */}
             <div className="px-6 pt-4 pb-3 border-b border-[#1f1f2b] bg-[#0c0c11]">
               <button
                 type="button"
-                onClick={enterStandaloneMode}
+                onClick={() => enterStandaloneMode()}
                 className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-purple-900/90 via-indigo-900/90 to-purple-800/90 hover:from-purple-800 hover:to-indigo-800 border border-purple-500/50 text-white text-xs font-bold shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <HardDrive className="h-4 w-4 text-yellow-300" />
-                <span>Launch Studio (Laptop Storage Mode)</span>
+                <span>Launch Studio (Device Storage Mode)</span>
               </button>
               <p className="text-[10px] text-zinc-400 text-center mt-1.5">
-                Zero cloud server needed • Works 100% directly on your laptop
+                Zero cloud server needed • Works 100% on Phone & Laptop
               </p>
             </div>
             {/* Mode Switcher Tabs */}
